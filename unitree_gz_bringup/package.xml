@@ -1,0 +1,35 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>unitree_gz_bringup</name>
+  <version>0.0.1</version>
+  <description>
+    Launch files that spawn a robot (via unitree_gz_description) into Gazebo with
+    ros2_control and the policy bridge node wired up.
+  </description>
+  <maintainer email="kieran.paranjpe@mail.mcgill.ca">Kieran Paranjpe</maintainer>
+  <license>TODO</license>
+
+  <exec_depend>unitree_gz_description</exec_depend>
+  <exec_depend>unitree_policy_bridge</exec_depend>
+  <exec_depend>ros_gz_sim</exec_depend>
+  <exec_depend>ros_gz_bridge</exec_depend>
+  <exec_depend>robot_state_publisher</exec_depend>
+  <exec_depend>controller_manager</exec_depend>
+  <exec_depend>joint_state_broadcaster</exec_depend>
+  <exec_depend>forward_command_controller</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
+  <!-- gz_reset_node: ROS side, plus the gz-transport/gz-msgs python bindings it uses to
+       write JointPositionReset components into the simulator's ECM. -->
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>std_srvs</exec_depend>
+  <exec_depend>rosgraph_msgs</exec_depend>
+  <exec_depend>gz_transport_vendor</exec_depend>
+  <exec_depend>gz_msgs_vendor</exec_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

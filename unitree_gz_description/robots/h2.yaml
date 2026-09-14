@@ -1,0 +1,54 @@
+# Per-robot metadata for unitree_gz_description's generic URDF generator - only the things
+# that aren't paths and aren't derivable from urdf_path/policy_onnx_path (both supplied as
+# launch args, see unitree_gz_bringup/launch/sim.launch.py). Adding a new robot means adding
+# a file like this one - no new code, and no assumption about where the user's URDF or
+# trained policy checkout lives.
+
+# Existing empty frame in H2.urdf (see the "imu" comment block near its <joint
+# name="imu_in_torso_joint">/<joint name="imu_in_pelvis_joint">) - the IMU sensor gets
+# attached here at launch time.
+imu_link: imu_in_pelvis
+
+# H2's natural standing height (UNITREE_H2_CFG.init_state.pos in unitree_rl_lab/source/
+# unitree_rl_lab/unitree_rl_lab/assets/robots/unitree.py) - spawning at this height rather
+# than well above the ground means there's no meaningful free-fall before the policy engages,
+# just the few seconds joint_state_broadcaster/effort_controller take to activate (during
+# which policy_bridge_node's on_step() holds off - see its joint_state_msg_count_ check).
+spawn_height: 1.03
+
+# Real SDK motor index order - github.com/unitreerobotics/unitree_sdk2,
+# example/h2/low_level/h2_ankle_swing_example.cpp's `enum H2JointIndex` (31 motors).
+# Combined with deploy.yaml's joint_ids_map this recovers joint names in the policy's own
+# (env) order without needing Isaac Lab installed.
+joint_sdk_names:
+  - left_hip_pitch_joint
+  - left_hip_roll_joint
+  - left_hip_yaw_joint
+  - left_knee_joint
+  - left_ankle_roll_joint
+  - left_ankle_pitch_joint
+  - right_hip_pitch_joint
+  - right_hip_roll_joint
+  - right_hip_yaw_joint
+  - right_knee_joint
+  - right_ankle_roll_joint
+  - right_ankle_pitch_joint
+  - waist_yaw_joint
+  - waist_roll_joint
+  - waist_pitch_joint
+  - left_shoulder_pitch_joint
+  - left_shoulder_roll_joint
+  - left_shoulder_yaw_joint
+  - left_elbow_joint
+  - left_wrist_roll_joint
+  - left_wrist_pitch_joint
+  - left_wrist_yaw_joint
+  - right_shoulder_pitch_joint
+  - right_shoulder_roll_joint
+  - right_shoulder_yaw_joint
+  - right_elbow_joint
+  - right_wrist_roll_joint
+  - right_wrist_pitch_joint
+  - right_wrist_yaw_joint
+  - head_pitch_joint
+  - head_yaw_joint
