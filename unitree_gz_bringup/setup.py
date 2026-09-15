@@ -18,7 +18,7 @@ setup(
     zip_safe=True,
     maintainer='Kieran Paranjpe',
     maintainer_email='kieran.paranjpe@mail.mcgill.ca',
-    description='Launch files for Gazebo + ros2_control + policy bridge bring-up.',
+    description='Gazebo + ros2_control simulator bring-up, reset node, and launch composition.',
     license='TODO',
     tests_require=['pytest'],
     entry_points={

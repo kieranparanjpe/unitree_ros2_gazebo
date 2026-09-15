@@ -10,9 +10,10 @@
   <maintainer email="kieran.paranjpe@mail.mcgill.ca">Kieran Paranjpe</maintainer>
   <license>TODO</license>
 
+  <!-- Deliberately minimal: generate_urdf.py imports only os, xml.etree and yaml. Everything
+       that needs ROS or Gazebo lives in unitree_gz_bringup, so the policy packages can depend
+       on this one without pulling in a simulator they may not have. -->
   <depend>python3-yaml</depend>
-  <exec_depend>launch</exec_depend>
-  <exec_depend>launch_ros</exec_depend>
 
   <export>
     <build_type>ament_python</build_type>

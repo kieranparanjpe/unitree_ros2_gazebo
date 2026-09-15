@@ -4,14 +4,17 @@
   <name>unitree_gz_bringup</name>
   <version>0.0.1</version>
   <description>
-    Launch files that spawn a robot (via unitree_gz_description) into Gazebo with
-    ros2_control and the policy bridge node wired up.
+    The simulator: spawns a robot (via unitree_gz_description) into Gazebo with ros2_control,
+    resets it to the trained start pose, and composes a policy launch file with its own
+    (launch_utils.py). Starts no policy node itself - that is the policy packages' job.
   </description>
   <maintainer email="kieran.paranjpe@mail.mcgill.ca">Kieran Paranjpe</maintainer>
   <license>TODO</license>
 
   <exec_depend>unitree_gz_description</exec_depend>
-  <exec_depend>unitree_policy_bridge</exec_depend>
+  <!-- launch_utils.py composes a policy launch file with sim.launch.py. -->
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
   <exec_depend>ros_gz_sim</exec_depend>
   <exec_depend>ros_gz_bridge</exec_depend>
   <exec_depend>robot_state_publisher</exec_depend>

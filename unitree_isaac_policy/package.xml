@@ -22,7 +22,10 @@
   <depend>std_msgs</depend>
   <depend>yaml-cpp</depend>
   <depend>spdlog</depend>
+  <!-- policy.launch.py needs only the description library; all.launch.py also starts the
+       simulator, which is what pulls in unitree_gz_bringup. -->
   <exec_depend>unitree_gz_description</exec_depend>
+  <exec_depend>unitree_gz_bringup</exec_depend>
 
   <export>
     <build_type>ament_cmake</build_type>

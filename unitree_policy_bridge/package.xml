@@ -19,7 +19,10 @@
   <depend>geometry_msgs</depend>
   <depend>std_msgs</depend>
   <depend>yaml-cpp</depend>
+  <!-- bridge.launch.py needs only the description library; all.launch.py also starts the
+       simulator, which is what pulls in unitree_gz_bringup. -->
   <exec_depend>unitree_gz_description</exec_depend>
+  <exec_depend>unitree_gz_bringup</exec_depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>

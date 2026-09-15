@@ -36,12 +36,19 @@ no `unitree_rl_lab` checkout.
 No nodes; it is imported by the launch files. `generate_urdf.py` injects the `<ros2_control>`
 block (one joint per motor, each carrying its `default_joint_pos` as a nested
 `<param name="initial_value">`), the `gz_ros2_control` plugin, and an IMU sensor, and builds
-the `controller_manager` YAML. `launch_utils.py` composes a policy launch file with the
-simulator launch in the correct order (see `all.launch.py` below). `robots/<name>.yaml` holds
-the only per-robot data that is neither a path nor derivable: `imu_link`, `joint_sdk_names`,
-`spawn_height`.
+the `controller_manager` YAML. `robots/<name>.yaml` holds the only per-robot data that is
+neither a path nor derivable: `imu_link`, `joint_sdk_names`, `spawn_height`.
+
+It depends on nothing but `python3-yaml` — `generate_urdf.py` imports only `os`, `xml.etree`
+and `yaml`. That is deliberate: both policy packages import it for the joint-order derivation,
+and on the hardware path there is no Gazebo to depend on.
 
 ### `unitree_gz_bringup`
+
+`launch_utils.py` composes a policy launch file with the simulator launch in the correct order
+(see `all.launch.py` below) — it lives here rather than in `unitree_gz_description` because it
+starts `sim.launch.py`, and having it on the other side made the two packages mutually
+dependent.
 
 `gz_reset_node` places the robot in `deploy.yaml`'s exact start state — joint positions, joint
 velocities, base pose and base velocity — by writing the Gazebo ECM directly, then un-pauses
@@ -178,7 +185,7 @@ colcon build --symlink-install --packages-select \
 | `unitree_gz_bringup sim.launch.py` | Gazebo, the robot, controllers, `gz_reset_node` | The simulator on its own |
 
 Both `all.launch.py` files are a few lines delegating to `combined_launch_description()` in
-`unitree_gz_description/launch_utils.py`, which includes the matching policy launch file and
+`unitree_gz_bringup/launch_utils.py`, which includes the matching policy launch file and
 then `sim.launch.py`.
 
 **Ordering is not cosmetic.** The policy stack must be commanding effort before the world
