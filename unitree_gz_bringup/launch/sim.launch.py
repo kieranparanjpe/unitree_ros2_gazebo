@@ -13,7 +13,6 @@ from unitree_gz_description.generate_urdf import (
     IMU_GZ_TOPIC,
     build_controller_config,
     build_urdf,
-    derive_deploy_yaml_path,
     env_ordered_joint_names,
     load_deploy,
     load_robot_config,
@@ -23,11 +22,10 @@ from unitree_gz_description.generate_urdf import (
 def launch_setup(context, *args, **kwargs):
     robot = LaunchConfiguration('robot').perform(context)
     urdf_path = LaunchConfiguration('urdf_path').perform(context)
-    policy_onnx_path = LaunchConfiguration('policy_onnx_path').perform(context)
+    deploy_yaml_path = LaunchConfiguration('deploy_yaml_path').perform(context)
 
     description_share = get_package_share_directory('unitree_gz_description')
     robot_cfg = load_robot_config(description_share, robot)
-    deploy_yaml_path = derive_deploy_yaml_path(policy_onnx_path)
     deploy = load_deploy(deploy_yaml_path)
     joint_names = env_ordered_joint_names(deploy, robot_cfg)
 
@@ -103,7 +101,7 @@ def launch_setup(context, *args, **kwargs):
     )
 
     # Snaps the robot to deploy.yaml's default pose once the whole stack is live, then
-    # notifies the policy bridge - see unitree_gz_bringup/gz_reset_node.py for why the
+    # notifies the policy node - see unitree_gz_bringup/gz_reset_node.py for why the
     # startup window can't simply be waited out.
     gz_reset = Node(
         package='unitree_gz_bringup',
@@ -117,18 +115,6 @@ def launch_setup(context, *args, **kwargs):
         }],
     )
 
-    policy_bridge = Node(
-        package='unitree_policy_bridge',
-        executable='policy_bridge_node',
-        parameters=[{
-            'deploy_yaml_path': deploy_yaml_path,
-            'policy_onnx_path': policy_onnx_path,
-            'joint_names': joint_names,
-            'use_sim_time': True,
-            'wait_for_reset': True,
-        }],
-    )
-
     return [
         gz_sim,
         robot_state_publisher,
@@ -137,7 +123,6 @@ def launch_setup(context, *args, **kwargs):
         effort_controller_spawner,
         imu_bridge,
         gz_reset,
-        policy_bridge,
     ]
 
 
@@ -156,11 +141,12 @@ def generate_launch_description():
             ),
         ),
         DeclareLaunchArgument(
-            'policy_onnx_path',
+            'deploy_yaml_path',
             description=(
-                'Path to the exported policy.onnx. deploy.yaml is derived as the sibling '
-                "'params/' directory next to it (policy_dir/exported/policy.onnx and "
-                'policy_dir/params/deploy.yaml).'
+                "Path to the training run's params/deploy.yaml. The simulator needs it for the "
+                'joint order and default pose that shape the URDF and controller config - not '
+                'for the policy itself, which the unitree_isaac_policy / unitree_policy_bridge '
+                'launch files load separately.'
             ),
         ),
         OpaqueFunction(function=launch_setup),

@@ -1,13 +1,15 @@
 <?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
-  <name>unitree_policy_bridge</name>
+  <name>unitree_isaac_policy</name>
   <version>0.0.1</version>
   <description>
-    Robot-agnostic manifest-driven policy inference node: parses an Isaac Lab-exported
-    deploy.yaml, runs the ONNX policy, and computes PD-to-effort commands using the same
-    gains as training. Ports the term registry from unitree_rl_lab's C++ hardware deploy
-    path (deploy/include/isaaclab/envs/mdp/observations/observations.h) to ROS2 topics.
+    Runs an Isaac Lab-trained policy in ROS 2 by reusing unitree_rl_lab's deploy runtime
+    (ManagerBasedRLEnv / ObservationManager / ActionManager / OrtRunner) rather than
+    re-implementing it: policy_node substitutes ROS topics for DDS LowState and /cmd_vel for
+    the handheld joystick, and pd_node converts the resulting joint position targets to
+    torques - the one step no other deploy target needs, since firmware or the simulator's own
+    actuator model provides it there.
   </description>
   <maintainer email="kieran.paranjpe@mail.mcgill.ca">Kieran Paranjpe</maintainer>
   <license>TODO</license>
@@ -19,10 +21,8 @@
   <depend>geometry_msgs</depend>
   <depend>std_msgs</depend>
   <depend>yaml-cpp</depend>
+  <depend>spdlog</depend>
   <exec_depend>unitree_gz_description</exec_depend>
-
-  <test_depend>ament_lint_auto</test_depend>
-  <test_depend>ament_lint_common</test_depend>
 
   <export>
     <build_type>ament_cmake</build_type>
