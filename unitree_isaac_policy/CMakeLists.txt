@@ -50,7 +50,9 @@ endif()
 file(GLOB ONNXRUNTIME_SO "${ONNXRUNTIME_ROOT}/lib/libonnxruntime.so*")
 list(GET ONNXRUNTIME_SO 0 ONNXRUNTIME_LIB)
 
-add_executable(policy_node src/policy_node.cpp)
+# The only translation unit: it includes policy_node.hpp, which includes ros_articulation.hpp.
+# Both classes are header-only, so there is nothing else to compile.
+add_executable(policy_node src/policy_node_main.cpp)
 target_include_directories(policy_node PRIVATE
   ${ISAACLAB_INCLUDE}
   ${UNITREE_SDK2_ROOT}/include

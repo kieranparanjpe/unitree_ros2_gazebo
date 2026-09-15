@@ -1,8 +1,9 @@
 #pragma once
 
 // Actuator model, deliberately free of ROS so a ros2_control controller can reuse it
-// unchanged. tau = kp*(q_des - q) - kd*dq is what Isaac's implicit actuator, the motor
-// firmware, and MuJoCo all compute; a PID's derivative-on-error term is not the same thing.
+// unchanged. torque = kp*(target_pos - joint_pos) - kd*joint_vel is what Isaac's implicit
+// actuator, the motor firmware, and MuJoCo all compute; a PID's derivative-on-error term is
+// not the same thing.
 #include <cmath>
 #include <stdexcept>
 #include <vector>
@@ -14,47 +15,58 @@ namespace unitree_isaac_policy
 
   struct Gains
   {
-    std::vector<double> kp, kd;
+    std::vector<double> kp;
+    std::vector<double> kd;
   };
 
-  // deploy.yaml exports stiffness/damping in the robot's SDK motor order while everything else
-  // is in Isaac's environment order; joint_ids_map[i] is the SDK index of environment joint i.
-  // Reading them positionally hands each joint another joint's gains.
-  inline Gains load_gains(const YAML::Node & deploy, size_t n)
+  // deploy.yaml exports stiffness/damping in the robot's SDK motor order while everything
+  // else is in Isaac's environment order; joint_ids_map[env_index] is the SDK index of
+  // environment joint env_index. Reading them positionally hands each joint another joint's
+  // gains.
+  inline Gains load_gains(const YAML::Node & deploy, size_t joint_count)
   {
-    const auto ids = deploy["joint_ids_map"].as<std::vector<int>>();
-    const auto kp_sdk = deploy["stiffness"].as<std::vector<double>>();
-    const auto kd_sdk = deploy["damping"].as<std::vector<double>>();
-    if (ids.size() != n) {
+    const auto joint_ids_map = deploy["joint_ids_map"].as<std::vector<int>>();
+    const auto stiffness_sdk_order = deploy["stiffness"].as<std::vector<double>>();
+    const auto damping_sdk_order = deploy["damping"].as<std::vector<double>>();
+
+    if (joint_ids_map.size() != joint_count) {
       throw std::runtime_error("deploy.yaml joint_ids_map length doesn't match joint_names");
     }
-    Gains g;
-    for (size_t i = 0; i < n; ++i) {
-      const auto s = static_cast<size_t>(ids[i]);
-      if (s >= kp_sdk.size() || s >= kd_sdk.size()) {
+
+    Gains gains;
+    for (size_t env_index = 0; env_index < joint_count; ++env_index) {
+      const auto sdk_index = static_cast<size_t>(joint_ids_map[env_index]);
+
+      if (sdk_index >= stiffness_sdk_order.size() || sdk_index >= damping_sdk_order.size()) {
         throw std::runtime_error("deploy.yaml joint_ids_map indexes past stiffness/damping");
       }
-      g.kp.push_back(kp_sdk[s]);
-      g.kd.push_back(kd_sdk[s]);
+
+      gains.kp.push_back(stiffness_sdk_order[sdk_index]);
+      gains.kd.push_back(damping_sdk_order[sdk_index]);
     }
-    return g;
+    return gains;
   }
 
   // Far beyond any real actuator limit - only trips on a numerical blow-up, never on a
   // legitimate command.
   constexpr double kMaxSaneEffortNm = 1.0e6;
 
-  inline bool sane(double tau)
+  inline bool sane(double torque)
   {
-    return std::isfinite(tau) && std::abs(tau) <= kMaxSaneEffortNm;
+    return std::isfinite(torque) && std::abs(torque) <= kMaxSaneEffortNm;
   }
 
   inline void compute_effort(
-    const Gains & g, const std::vector<double> & target, const std::vector<double> & q,
-    const std::vector<double> & dq, std::vector<double> & tau)
+    const Gains & gains,
+    const std::vector<double> & target_pos,
+    const std::vector<double> & joint_pos,
+    const std::vector<double> & joint_vel,
+    std::vector<double> & torque)
   {
-    for (size_t i = 0; i < tau.size(); ++i) {
-      tau[i] = g.kp[i] * (target[i] - q[i]) - g.kd[i] * dq[i];
+    for (size_t joint_index = 0; joint_index < torque.size(); ++joint_index) {
+      torque[joint_index] =
+        gains.kp[joint_index] * (target_pos[joint_index] - joint_pos[joint_index]) -
+          gains.kd[joint_index] * joint_vel[joint_index];
     }
   }
 
