@@ -30,6 +30,7 @@ no `unitree_rl_lab` checkout.
 | `unitree_gz_bringup` | Python | The simulator: launch files, world, and `gz_reset_node` |
 | `unitree_isaac_policy` | C++ | Policy stack A — `policy_node` + `pd_node` |
 | `unitree_policy_bridge` | C++ | Policy stack B — `policy_bridge_node` |
+| `unitree_keyboard_teleop` | C++ | Optional. `keyboard_controller` — drive the robot from the keyboard |
 
 ### `unitree_gz_description`
 
@@ -105,6 +106,9 @@ sudo apt install \
   ros-jazzy-ros2-control ros-jazzy-ros2-controllers ros-jazzy-controller-manager \
   ros-jazzy-forward-command-controller ros-jazzy-joint-state-broadcaster \
   ros-jazzy-robot-state-publisher
+
+# unitree_keyboard_teleop only. Usually already present - rosbag2 pulls it in.
+sudo apt install ros-jazzy-keyboard-handler
 
 # C++ libraries. yaml-cpp is used by both policy packages; eigen/spdlog/fmt by
 # unitree_isaac_policy only (the unitree_rl_lab headers it reuses pull them in).
@@ -305,6 +309,30 @@ ros2 topic pub -r 20 /cmd_vel geometry_msgs/msg/Twist "{angular: {z: 0.2}}"
 # arc
 ros2 topic pub -r 20 /cmd_vel geometry_msgs/msg/Twist "{linear: {x: 0.4}, angular: {z: 0.2}}"
 ```
+
+Or drive it from the keyboard, in its own terminal (the node reads the terminal it is started
+in, so it needs one to itself):
+
+```bash
+ros2 run unitree_keyboard_teleop keyboard_controller
+```
+
+| key | effect |
+| --- | --- |
+| `W` / `S` | forward / back (`linear.x`, ±0.5 m/s) |
+| `A` / `D` | left / right (`linear.y`, ±0.3 m/s) |
+| `←` / `→` | turn left / right (`angular.z`, ±0.2 rad/s) |
+| `space` | stop |
+
+**Hold a key to keep moving.** A terminal reports key presses but never key *releases*, so
+holding is reconstructed from auto-repeat: each axis zeroes itself once no key has refreshed it
+for `key_timeout` (default 0.6 s, which has to clear X11's ~500 ms initial repeat delay). That
+means releasing a key coasts for about half a second — `space` is the instant stop.
+
+Each axis expires independently, and terminals only auto-repeat the most recently pressed key,
+so a sustained arc means tapping `W` while holding the arrow. Magnitudes are parameters
+(`linear_x`, `linear_y`, `angular_z`, `key_timeout`, `publish_rate_hz`, `cmd_vel_topic`);
+`linear_x` can go to 1.0, the trained maximum.
 
 Commands are clamped to the ranges the policy was trained on, read from `deploy.yaml`. For the
 current H2 checkpoint:
