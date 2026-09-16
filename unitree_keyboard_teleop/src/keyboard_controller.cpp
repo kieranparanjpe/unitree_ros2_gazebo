@@ -36,8 +36,8 @@ namespace unitree_keyboard_teleop
         // sit inside that so what you command is what the policy acts on; raise linear_x
         // towards 1.0 if you want the trained maximum.
         linear_x_ = declare_parameter<double>("linear_x", 1);
-        linear_y_ = declare_parameter<double>("linear_y", 0.3);
-        angular_z_ = declare_parameter<double>("angular_z", 0.2);
+        linear_y_ = declare_parameter<double>("linear_y", 0.5);
+        angular_z_ = declare_parameter<double>("angular_z", 0.5);
 
         // Must exceed the terminal's initial auto-repeat delay or a held key stutters: one
         // press, a gap, then the repeat stream.
