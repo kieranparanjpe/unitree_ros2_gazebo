@@ -47,11 +47,11 @@ def launch_setup(context, *args, **kwargs):
         PythonLaunchDescriptionSource(
             os.path.join(get_package_share_directory('ros_gz_sim'), 'launch', 'gz_sim.launch.py')
         ),
-        # Deliberately no "-r": the world starts paused and gz_reset_node steps it forward
-        # only as far as the controllers need to activate, then resets and un-pauses. Running
-        # from the start instead gives the robot several seconds of falling before anything
-        # can command it, and a teleport does not undo the base velocity it picks up doing so.
-        launch_arguments={'gz_args': world_path}.items(),
+        # "-r": the world runs from the start. The robot has nothing commanding it until the
+        # policy engages, so it falls - gz_reset_node teleports it back once it has
+        # settled. Starting paused instead would never let the controllers activate, since
+        # controller_manager's update loop only runs on simulation steps.
+        launch_arguments={'gz_args': f'-r {world_path}'}.items(),
     )
 
     robot_state_publisher = Node(
@@ -100,9 +100,8 @@ def launch_setup(context, *args, **kwargs):
         remappings=[(f'/{IMU_GZ_TOPIC}', '/imu')],
     )
 
-    # Snaps the robot to deploy.yaml's default pose once the whole stack is live, then
-    # notifies the policy node - see unitree_gz_bringup/gz_reset_node.py for why the
-    # startup window can't simply be waited out.
+    # Snaps the robot to deploy.yaml's default pose once it has settled, then notifies the
+    # policy node.
     gz_reset = Node(
         package='unitree_gz_bringup',
         executable='gz_reset_node',

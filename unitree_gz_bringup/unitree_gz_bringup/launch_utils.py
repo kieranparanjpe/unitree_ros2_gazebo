@@ -1,10 +1,8 @@
 # Composes a policy launch file with the simulator launch in the order that actually works.
 #
-# The policy stack goes up first and the simulator follows after a short delay. gz_reset_node
-# un-pauses the world as soon as its startup reset lands, so anything that isn't already
-# commanding effort by then lets the robot free-fall - and the teleport afterwards does not
-# reliably recover it. The delay also covers the ONNX session load, which is the slowest part
-# of a policy node's startup.
+# The policy stack goes up first and the simulator follows after a short delay, which covers
+# the ONNX session load - the slowest part of a policy node's startup. /policy_reset is latched,
+# so a policy that is still loading when the reset fires will still pick it up.
 import os
 
 from ament_index_python.packages import get_package_share_directory

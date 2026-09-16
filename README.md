@@ -27,7 +27,7 @@ no `unitree_rl_lab` checkout.
 | Package | Language | Role |
 | --- | --- | --- |
 | `unitree_gz_description` | Python | Library, no nodes. Turns a bare URDF + `deploy.yaml` into a Gazebo/`ros2_control`-ready URDF and controller config |
-| `unitree_gz_bringup` | Python | The simulator: launch file, world, and `gz_reset_node` |
+| `unitree_gz_bringup` | Python | The simulator: launch files, world, and `gz_reset_node` |
 | `unitree_isaac_policy` | C++ | Policy stack A — `policy_node` + `pd_node` |
 | `unitree_policy_bridge` | C++ | Policy stack B — `policy_bridge_node` |
 
@@ -50,10 +50,17 @@ and on the hardware path there is no Gazebo to depend on.
 starts `sim.launch.py`, and having it on the other side made the two packages mutually
 dependent.
 
-`gz_reset_node` places the robot in `deploy.yaml`'s exact start state — joint positions, joint
-velocities, base pose and base velocity — by writing the Gazebo ECM directly, then un-pauses
-the world and publishes a latched `/policy_reset`. It does this once at startup, and again on
-demand via its `~/reset` service.
+`gz_reset_node` places the robot in `deploy.yaml`'s exact start state — joint positions,
+joint velocities, base pose and base velocity — by writing the Gazebo ECM directly, then
+publishes a latched `/policy_reset`. It does this once at startup, and again on demand via its
+`~/reset` service. The ECM writes themselves live in `gz_ecm.py` as plain functions.
+
+The world runs from the start (`gz sim -r`). Nothing commands the robot until the policy
+engages, so it falls; the node waits `settle_seconds` (default 3.0) for it to come to rest,
+then teleports it back. Starting the world paused instead is not an option — controller
+activation is serviced by `controller_manager`'s update loop, which under `gz_ros2_control`
+only runs on simulation steps, so a paused world never finishes activating and the spawners
+time out.
 
 ### `unitree_isaac_policy`
 
@@ -188,10 +195,10 @@ Both `all.launch.py` files are a few lines delegating to `combined_launch_descri
 `unitree_gz_bringup/launch_utils.py`, which includes the matching policy launch file and
 then `sim.launch.py`.
 
-**Ordering is not cosmetic.** The policy stack must be commanding effort before the world
-un-pauses. `gz_reset_node` un-pauses as soon as its startup reset lands, and a robot that is
-free-falling by then is not reliably recovered by a later teleport. `all.launch.py` handles
-this by starting the policy first and delaying the simulator by `sim_delay` seconds.
+`all.launch.py` starts the policy first and delays the simulator by `sim_delay` seconds, which
+covers the ONNX session load — the slowest part of a policy node's startup. It is not critical
+that the policy wins the race: `/policy_reset` is latched, so a policy still loading when the
+reset fires picks it up as soon as it subscribes.
 
 ## Run
 
@@ -268,19 +275,19 @@ launch file derives the joint list the same way, from `deploy.yaml`'s `joint_ids
 
 ### What you should see
 
-1. Gazebo opens **paused**, and the robot appears already in the trained crouch (not a
-   straight-legged zero pose). It should be motionless.
-2. A fraction of a second of simulation is stepped through so the controllers can activate —
-   activation is serviced by the `controller_manager` update loop, so it needs steps.
-3. `gz_reset_node` places the robot in `deploy.yaml`'s exact start state and the world
-   un-pauses:
+1. Gazebo opens **running**, with the robot spawned in the trained crouch at `spawn_height`.
+2. **The robot falls over.** This is expected — nothing commands it until the policy engages,
+   and `gz_reset_node` is waiting `settle_seconds` for it to stop moving.
+3. The robot snaps upright into `deploy.yaml`'s start state and the policy takes over:
    ```
-   Startup reset complete (31 joints reset to default pose) after 0.100s of simulation
+   Startup reset complete (31 joints reset to default pose); notifying policy node
    Reset received - re-seeding on post-reset data.
    Starting the trained policy from the reset default pose.
    ```
-4. The policy takes over immediately and the robot stands. With no velocity command it holds
-   position; `proj_grav_b` stays near `[0,0,-1]`.
+   Both the base *and every joint* should snap back. A robot that pops up to standing height
+   while still in a heap means the joint write was discarded — see the first note below.
+4. The robot stands. With no velocity command it holds position; `proj_grav_b` stays near
+   `[0,0,-1]`.
 
 ## Driving the robot
 
@@ -319,8 +326,8 @@ of the diagnostic log confirms.
 
 ## Resetting mid-run
 
-`gz_reset_node` exposes its reset as a service, returning the robot to the trained start state
-without restarting Gazebo:
+`gz_reset_node` exposes its reset as a service, returning the robot to the trained start
+state without restarting Gazebo:
 
 ```bash
 ros2 service call /gz_reset_node/reset std_srvs/srv/Trigger
@@ -362,6 +369,19 @@ note below says why.
 
 ## Notes and gotchas
 
+- **One ECM write per simulation step, or it is silently discarded.** A `JointPositionReset`
+  write lands correctly on its own — measured, a robot 3.025 rad from its default pose ends up
+  at 0.007. Issue *anything else* before the next step (a `set_pose`, or a second
+  `/world/<w>/control/state` call) and the joint write is thrown away while every service
+  still returns success: the same robot ends up at 0.8–1.2 rad. `_reset()` therefore writes the
+  base pose and velocity, steps once, writes the joints, steps again, and only then un-pauses.
+  This cost a long time to find because the symptom is invisible unless the robot has actually
+  drifted. An earlier version of this node batched all three writes, so its joint reset had
+  **never** worked — and nothing caught it, because back then the world started paused and the
+  robot never left the pose `initial_value` gave it. Its own log said so every run (`pose error
+  before reset 0.0000 rad`) and that read as success. If you change this sequence, test it
+  against a robot that has genuinely fallen over; a robot already in the right pose cannot
+  tell you anything.
 - **`deploy.yaml` is not uniformly ordered.** `stiffness` and `damping` are exported in the
   robot's SDK motor order, while `default_joint_pos`, the action scale/offset/clip and the
   observation scales are in Isaac's environment joint order. Reading them all positionally
@@ -369,13 +389,11 @@ note below says why.
   200, which cannot hold up a 75 kg robot. Both stacks re-index through `joint_ids_map`
   (`load_gains()` in `pd.hpp`, `load_dynamics()` in the bridge). Worth knowing before trusting
   any other array in that file.
-- **Start the policy before the simulator** — see Launch files. Both stacks fail the same way
-  if the world un-pauses with nothing commanding effort.
 - **The two stacks are mutually exclusive.** Both publish to `/effort_controller/commands`.
 - **`pd_node` does not clear its target on reset**, where `policy_bridge_node` does. During the
   re-seed window it keeps driving toward the pre-teleport target. Harmless at current sensor
-  rates — the window is 1–2 ms and `gz_reset_node` keeps the world paused across the teleport —
-  but it is mitigated by timing rather than by design.
+  rates — the window is 1–2 ms and `gz_reset_node` keeps the world paused across the
+  teleport — but it is mitigated by timing rather than by design.
 - **The control loop runs on simulation time.** The launch bridges `/clock` and every node sets
   `use_sim_time`. Without the clock bridge the policy would step on wall time, at a rate
   unrelated to how fast physics is advancing.
