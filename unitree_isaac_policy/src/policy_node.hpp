@@ -71,7 +71,7 @@ namespace unitree_isaac_policy
         isaaclab::observations_map()["velocity_commands"] =
           [this](isaaclab::ManagerBasedRLEnv* env, YAML::Node) {
             const auto ranges = env->cfg["commands"]["base_velocity"]["ranges"];
-            return std::vector<float>{
+            std::vector<float> command{
               std::clamp(
                 velocity_command_[0],
                 ranges["lin_vel_x"][0].as<float>(),
@@ -84,6 +84,10 @@ namespace unitree_isaac_policy
                 velocity_command_[2],
                 ranges["ang_vel_z"][0].as<float>(),
                 ranges["ang_vel_z"][1].as<float>())};
+            // Every velocity_commands implementation publishes here; gait_phase reads it to
+            // gate its clock the way training does.
+            env->command = command;
+            return command;
           };
 
         env_ = std::make_unique<isaaclab::ManagerBasedRLEnv>(
