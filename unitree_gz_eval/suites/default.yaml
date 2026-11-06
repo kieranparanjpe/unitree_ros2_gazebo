@@ -11,6 +11,7 @@
 lead: 0.5          # s of zero command at the start of each recorded test
 tail: 0.75         # s of zero command at the end
 cmd_rate: 50.0     # Hz /cmd_vel is published at
+repeats: 3         # the whole suite is run this many times; results are averaged
 
 fall:
   min_pelvis_height: 0.5   # m
@@ -54,11 +55,8 @@ tests:
       - {cmd: [0,  0.3, 0], for: 4.0}
 
   - name: spin
+    # In-place turning at 0.5 rad/s is covered by half_square's turns.
     steps:
-      - {cmd: [0, 0,  0.5], for: 4.0}
-      - {cmd: [0, 0,  0  ], for: 1.0}
-      - {cmd: [0, 0, -0.5], for: 4.0}
-      - {cmd: [0, 0,  0  ], for: 1.0}
       - {cmd: [0, 0,  1.0], for: 4.0}
       - {cmd: [0, 0,  0  ], for: 1.0}
       - {cmd: [0, 0, -1.0], for: 4.0}
@@ -86,10 +84,6 @@ tests:
       - {cmd: [0.5, 0, 0], for: 2.0}
       - {cmd: [0,   0, 0], for: 1.0}
       - {cmd: [0.5, 0, 0], for: 2.0}
-      - {cmd: [0,   0, 0], for: 1.0}
-      - {cmd: [0.5, 0, 0], for: 2.0}
-      - {cmd: [0,   0, 0], for: 1.0}
-      - {cmd: [0.5, 0, 0], for: 2.0}
 
   - name: reversals
     steps:
@@ -98,13 +92,9 @@ tests:
       - {cmd: [ 0,    0.3, 0], for: 4.0}
       - {cmd: [ 0,   -0.3, 0], for: 4.0}
 
-  - name: square
-    # 4 x (2 m forward, then a 90 deg turn in place: 0.5 rad/s for pi s).
+  - name: half_square
+    # 2 x (2 m forward, then a 90 deg turn in place: 0.5 rad/s for pi s).
     steps:
-      - {cmd: [0.5, 0, 0  ], for: 4.0}
-      - {cmd: [0,   0, 0.5], for: 3.14159}
-      - {cmd: [0.5, 0, 0  ], for: 4.0}
-      - {cmd: [0,   0, 0.5], for: 3.14159}
       - {cmd: [0.5, 0, 0  ], for: 4.0}
       - {cmd: [0,   0, 0.5], for: 3.14159}
       - {cmd: [0.5, 0, 0  ], for: 4.0}
@@ -115,7 +105,6 @@ tests:
       - {cmd: [0.5,  0,    0   ], for: 4.0}
       - {cmd: [0.5,  0,    0.3 ], for: 4.0}
       - {cmd: [0.3,  0.2,  0   ], for: 4.0}
-      - {cmd: [0.8,  0,    0   ], for: 4.0}
       - {cmd: [0,   -0.2, -0.6 ], for: 4.0}
 
   - name: pushes

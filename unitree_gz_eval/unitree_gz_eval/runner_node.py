@@ -67,6 +67,10 @@ class EvalRunner(Node):
         reset_service = self.declare_parameter('reset_service', '/gz_reset_node/reset').value
 
         self._suite = load_suite(suite_path)
+        # Whole suite, then whole suite again: anything that drifts over a session (CPU load)
+        # spreads evenly over the tests.
+        self._runs = [(rep, n, test) for rep in range(self._suite.repeats)
+                      for n, test in enumerate(self._suite.tests)]
         os.makedirs(self._out, exist_ok=True)
         shutil.copy(suite_path, os.path.join(self._out, 'suite.yaml'))
 
@@ -116,8 +120,8 @@ class EvalRunner(Node):
         self._idx = 0
         self.create_timer(1.0 / self._suite.cmd_rate, self._tick)
         self.get_logger().info(
-            f'suite "{self._suite.name}" ({self._suite.hash}): {len(self._suite.tests)} tests '
-            f'-> {self._out}')
+            f'suite "{self._suite.name}" ({self._suite.hash}): {len(self._suite.tests)} tests x '
+            f'{self._suite.repeats} repeats -> {self._out}')
 
     # --- callbacks: store, nothing else -------------------------------------------------------
 
@@ -158,7 +162,7 @@ class EvalRunner(Node):
 
     def _tick(self):
         now = self._now()
-        test = self._suite.tests[self._idx]
+        test = self._runs[self._idx][2]
 
         if self._phase == Phase.STARTING:
             if (self._startup_reset_seen and self._last_pose
@@ -242,27 +246,28 @@ class EvalRunner(Node):
     def _finish(self, test, status, reason=None, fall_t=None):
         self._recording = False
         self._publish_cmd((0.0, 0.0, 0.0), self._now())
+        rep, n, _ = self._runs[self._idx]
         entry = {
-            'name': test.name, 'status': status, 'reason': reason, 'fall_t': fall_t,
+            'name': test.name, 'repeat': rep + 1, 'status': status, 'reason': reason, 'fall_t': fall_t,
             'duration': test.duration,
             'segments': [{'t0': s.t0, 't1': s.t1, 'cmd': list(s.cmd)} for s in test.segments],
             'pushes': [{'t': p.t, 'dv': list(p.dv)} for p in test.pushes],
             'reset_check': self._reset,
         }
         if status != 'aborted':
-            entry['file'] = f'{self._idx + 1:02d}_{test.name}.npz'
+            entry['file'] = f'{n + 1:02d}_{test.name}_r{rep + 1}.npz'
             entry['rtf'] = (self._now() - self._t0) / max(time.time() - self._wall_t0, 1e-6)
             self._save(os.path.join(self._out, entry['file']))
         self._reset = None
         self._meta['tests'].append(entry)
         self._write_meta()
         self.get_logger().info(
-            f'[{self._idx + 1}/{len(self._suite.tests)}] {test.name}: {status}'
+            f'[{self._idx + 1}/{len(self._runs)}] {test.name} (repeat {rep + 1}): {status}'
             + (f' ({reason})' if reason else '')
             + (f' at {fall_t:.2f}s' if fall_t is not None else ''))
 
         self._idx += 1
-        if self._idx < len(self._suite.tests):
+        if self._idx < len(self._runs):
             self._start_reset()
         else:
             self._meta['finished'] = True

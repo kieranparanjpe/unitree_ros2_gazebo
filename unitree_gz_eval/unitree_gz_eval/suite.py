@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 
 import yaml
 
-_TOP_KEYS = {'lead', 'tail', 'cmd_rate', 'fall', 'reset_check', 'tests'}
+_TOP_KEYS = {'lead', 'tail', 'cmd_rate', 'repeats', 'fall', 'reset_check', 'tests'}
 _TEST_KEYS = {'name', 'lead', 'tail', 'steps'}
 _STEP_KEYS = {'cmd', 'for', 'pushes'}
 _PUSH_KEYS = {'at', 'dv'}
@@ -46,6 +46,7 @@ class Suite:
     name: str
     hash: str
     cmd_rate: float
+    repeats: int
     fall: dict
     reset_check: dict
     tests: list
@@ -105,6 +106,7 @@ def load_suite(path: str) -> Suite:
         name=path.rsplit('/', 1)[-1].removesuffix('.yaml'),
         hash=suite_hash(path),
         cmd_rate=float(raw['cmd_rate']),
+        repeats=int(raw.get('repeats', 1)),
         fall=raw['fall'],
         reset_check=raw['reset_check'],
         tests=tests,
