@@ -60,9 +60,20 @@ def test_straight_walk_at_an_angle_tracks_perfectly(tmp_path):
                        0.5 * math.sin(heading) * times, np.full_like(times, heading))
     metrics, series = analyze.tracking_metrics(
         test_data, analyze.segments_before_fall(make_test_entry([(0, 4, (0.5, 0, 0))])))
-    for metric in ('forward_velocity_error_full', 'forward_velocity_error_steady',
-                   'sideways_velocity_error_full', 'turn_rate_error_full', 'heading_error_deg'):
+    for metric in ('forward_velocity_rms_error_full', 'forward_velocity_rms_error_steady',
+                   'sideways_velocity_rms_error_full', 'turn_rate_rms_error_full',
+                   'heading_rms_error_deg'):
         assert metrics[metric] == pytest.approx(0, abs=1e-6)
+
+
+def test_oscillation_around_the_command_does_not_cancel(tmp_path):
+    # Sideways velocity 0.2 * sin(2 pi t): averages to the commanded 0, but its RMS is 0.2/sqrt(2).
+    times = np.arange(0, 4, SAMPLE_PERIOD)
+    sideways_position = -0.2 / (2 * math.pi) * np.cos(2 * math.pi * times)
+    test_data = record(tmp_path, times, 0 * times, sideways_position, 0 * times)
+    metrics, _ = analyze.tracking_metrics(
+        test_data, analyze.segments_before_fall(make_test_entry([(0, 4, (0, 0, 0))])))
+    assert metrics['sideways_velocity_rms_error_full'] == pytest.approx(0.2 / math.sqrt(2), rel=1e-3)
 
 
 def test_turning_too_fast(tmp_path):
@@ -72,28 +83,32 @@ def test_turning_too_fast(tmp_path):
     test_data = record(tmp_path, times, 0 * times, 0 * times, 0.5 * times)
     metrics, series = analyze.tracking_metrics(
         test_data, analyze.segments_before_fall(make_test_entry([(0, duration, (0, 0, 0.4))])))
-    assert metrics['turn_rate_error_steady'] == pytest.approx(0.1, abs=1e-6)
-    # Across the segment's samples, first to last.
-    assert metrics['heading_error_deg'] == pytest.approx(
-        math.degrees(0.1 * (times[-1] - times[0])), abs=1e-6)
+    assert metrics['turn_rate_rms_error_steady'] == pytest.approx(0.1, abs=1e-6)
     # Series: the signed error every sample, and the heading error growing at 0.1 rad/s.
     error_times, turn_rate_errors = series['turn_rate_error']
     assert turn_rate_errors == pytest.approx(np.full_like(error_times, 0.1), abs=1e-6)
     heading_times, heading_errors = series['heading_error_deg']
     assert heading_errors == pytest.approx(np.degrees(0.1 * heading_times), abs=1e-6)
+    # Summary: the RMS of that growing heading error over the segment.
+    assert metrics['heading_rms_error_deg'] == pytest.approx(
+        np.sqrt(np.mean(np.degrees(0.1 * times) ** 2)), rel=1e-6)
 
 
 def test_steady_window_ignores_first_second(tmp_path):
-    # Stands still for 1 s, then walks at the commanded 0.5 m/s.
+    # Stands still for 0.9 s, then walks at the commanded 0.5 m/s (the change lands inside the
+    # skipped first second, so the steady window sees none of it).
     times = np.arange(0, 4, SAMPLE_PERIOD)
-    test_data = record(tmp_path, times, 0.5 * np.maximum(times - 1, 0), 0 * times, 0 * times)
+    test_data = record(tmp_path, times, 0.5 * np.maximum(times - 0.9, 0), 0 * times, 0 * times)
     metrics, series = analyze.tracking_metrics(
         test_data, analyze.segments_before_fall(make_test_entry([(0, 4, (0.5, 0, 0))])))
-    assert metrics['forward_velocity_error_steady'] == pytest.approx(0, abs=1e-3)
-    assert metrics['forward_velocity_error_full'] == pytest.approx(0.125, abs=1e-2)
-    # The signed series averages back to the summary: |mean(series)| == the full-window error.
+    assert metrics['forward_velocity_rms_error_steady'] == pytest.approx(0, abs=1e-6)
+    # Error -0.5 m/s for 0.9 s of 4: RMS = sqrt(0.25 * 0.9 / 4).
+    assert metrics['forward_velocity_rms_error_full'] == pytest.approx(
+        math.sqrt(0.25 * 0.9 / 4), abs=1e-2)
+    # The summary is the RMS of the signed series over the window.
     _, forward_errors = series['forward_velocity_error']
-    assert abs(forward_errors.mean()) == pytest.approx(metrics['forward_velocity_error_full'])
+    assert np.sqrt(np.mean(forward_errors ** 2)) == pytest.approx(
+        metrics['forward_velocity_rms_error_full'])
 
 
 def test_standing_drift_and_pushed_segments_skipped(tmp_path):
@@ -102,9 +117,12 @@ def test_standing_drift_and_pushed_segments_skipped(tmp_path):
     entry = make_test_entry([(0, 4, (0, 0, 0)), (4, 8, (0, 0, 0))], push_times=(5.0,))
     metrics, series = analyze.standing_metrics(
         test_data, analyze.segments_before_fall(entry), entry['pushes'])
-    assert metrics['standing_drift_m_per_s'] == pytest.approx(0.025, rel=1e-6)
-    assert metrics['standing_yaw_drift_deg_per_s'] == pytest.approx(1.0, rel=1e-6)
-    # Only the unpushed first segment appears in the series.
+    # Only the unpushed first segment counts: distance 0.025 t, yaw change 1 deg/s * t.
+    first_segment_times = times[times < 4]
+    assert metrics['standing_rms_drift_m'] == pytest.approx(
+        np.sqrt(np.mean((0.025 * first_segment_times) ** 2)), rel=1e-6)
+    assert metrics['standing_rms_yaw_drift_deg'] == pytest.approx(
+        np.sqrt(np.mean(first_segment_times ** 2)), rel=1e-6)
     distance_times, distances = series['standing_distance_from_start']
     assert distance_times.max() < 4
     assert distances[-1] == pytest.approx(0.025 * distance_times[-1])
@@ -131,8 +149,8 @@ def test_torso_pitch_is_in_the_world_frame(tmp_path):
     test_data = record(tmp_path, times, 0 * times, 0 * times, np.full_like(times, math.pi / 2),
                        torso_orientation_in_base=[0, math.sin(pitch / 2), 0, math.cos(pitch / 2)])
     metrics, series = analyze.upright_metrics(test_data)
-    assert metrics['torso_pitch_deg'] == pytest.approx(10, abs=1e-6)
-    assert metrics['torso_roll_deg'] == pytest.approx(0, abs=1e-6)
+    assert metrics['torso_pitch_rms_deg'] == pytest.approx(10, abs=1e-6)
+    assert metrics['torso_roll_rms_deg'] == pytest.approx(0, abs=1e-6)
 
 
 def test_touchdowns_ignore_brief_lifts_and_a_foot_already_down():

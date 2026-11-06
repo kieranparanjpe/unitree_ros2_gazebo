@@ -127,6 +127,11 @@ def mean(values):
     return float(np.mean(values))
 
 
+def rms(values):
+    """Root mean square: sqrt(mean(value^2)). Never cancels, unlike a plain mean."""
+    return float(np.sqrt(np.mean(np.square(values))))
+
+
 def commanded_at_each_sample(test_data, segments):
     """(samples, 3) command in force at each sample; NaN where no segment covers it (after a
     fall)."""
@@ -140,24 +145,26 @@ def commanded_at_each_sample(test_data, segments):
 # --- metrics: each returns (summary, series) for one repeat of one test -------------------------
 
 def tracking_metrics(test_data, segments):
-    """1, 2. Series, every sample:  error = measured - commanded  for forward velocity, sideways
-    velocity and turn rate (signed);  heading error = heading change since the test started -
-    commanded heading change, in degrees.
-    Summary, per segment:  |mean of the error over the window|  for the full and steady windows;
-    heading error = |change of the heading error series across the segment|. Each averaged over
+    """1, 2. Series, every sample (signed):  error = measured - commanded  for forward velocity,
+    sideways velocity and turn rate;  heading error = heading change since the segment started -
+    commanded heading change since then, in degrees.
+    Summary, per segment:  rms error = sqrt(mean(error^2)) over the full and steady windows;
+    heading rms error = sqrt(mean(heading error^2)) over the segment. Each averaged over
     segments."""
     times = test_data['time']
     commanded = commanded_at_each_sample(test_data, segments)
     errors = {f'{quantity}_error': test_data[quantity] - commanded[:, command_index]
               for command_index, quantity in enumerate(COMMANDED_QUANTITIES)}
-    # Samples no segment covers (e.g. one stamped just before the test started) add no turn.
+    # Running heading error since the test started. Samples no segment covers (e.g. one stamped
+    # just before the test started) add no commanded turn.
     commanded_turn_rate = np.nan_to_num(commanded[:, 2])
     commanded_heading_change = np.concatenate(
         [[0.0], np.cumsum(commanded_turn_rate[:-1] * np.diff(times))])
-    heading_error = np.degrees(
+    running_heading_error = np.degrees(
         test_data['base_yaw'] - test_data['base_yaw'][0] - commanded_heading_change)
 
     summary = defaultdict(list)
+    heading_error = np.full(len(times), np.nan)   # since the start of each segment
     for segment in segments:
         for window_name, skipped_seconds in (('full', 0.0), ('steady', STEADY_WINDOW_SKIP_SECONDS)):
             in_window = samples_between(
@@ -165,10 +172,12 @@ def tracking_metrics(test_data, segments):
             if not in_window.any():
                 continue
             for name, error in errors.items():
-                summary[f'{name}_{window_name}'].append(abs(error[in_window].mean()))
-        segment_heading_error = heading_error[
-            samples_between(test_data, segment['start_time'], segment['end_time'])]
-        summary['heading_error_deg'].append(abs(segment_heading_error[-1] - segment_heading_error[0]))
+                quantity = name.removesuffix('_error')
+                summary[f'{quantity}_rms_error_{window_name}'].append(rms(error[in_window]))
+        in_segment = samples_between(test_data, segment['start_time'], segment['end_time'])
+        heading_error[in_segment] = (running_heading_error[in_segment]
+                                     - running_heading_error[in_segment][0])
+        summary['heading_rms_error_deg'].append(rms(heading_error[in_segment]))
 
     covered = ~np.isnan(commanded[:, 0])
     series = {name: (times[covered], error[covered])
@@ -178,9 +187,9 @@ def tracking_metrics(test_data, segments):
 
 def standing_metrics(test_data, segments, pushes):
     """4. Zero-command segments with no push in them, whole segment.
-    Summary:  drift = |position(end) - position(start)| / duration (m/s),
-              yaw drift = |yaw(end) - yaw(start)| / duration (deg/s).
-    Series:   distance from where the segment started (m), yaw change since it started (deg)."""
+    Series:   distance from where the segment started (m), yaw change since it started (deg).
+    Summary:  rms drift = sqrt(mean(distance^2)) (m), rms yaw drift = sqrt(mean(yaw change^2))
+              (deg), per segment, averaged over segments."""
     position_drifts, yaw_drifts = [], []
     series_times, distances_from_start, yaw_changes_deg = [], [], []
     for segment in segments:
@@ -194,17 +203,17 @@ def standing_metrics(test_data, segments, pushes):
         distance_from_start = np.hypot(
             test_data['base_x'][in_segment] - test_data['base_x'][in_segment][0],
             test_data['base_y'][in_segment] - test_data['base_y'][in_segment][0])
-        yaw_change = test_data['base_yaw'][in_segment] - test_data['base_yaw'][in_segment][0]
-        duration = times[-1] - times[0]
-        position_drifts.append(distance_from_start[-1] / duration)
-        yaw_drifts.append(math.degrees(abs(yaw_change[-1])) / duration)
+        yaw_change_deg = np.degrees(
+            test_data['base_yaw'][in_segment] - test_data['base_yaw'][in_segment][0])
+        position_drifts.append(rms(distance_from_start))
+        yaw_drifts.append(rms(yaw_change_deg))
         series_times.append(times)
         distances_from_start.append(distance_from_start)
-        yaw_changes_deg.append(np.degrees(yaw_change))
+        yaw_changes_deg.append(yaw_change_deg)
     if not position_drifts:
         return {}, {}
-    summary = {'standing_drift_m_per_s': mean(position_drifts),
-               'standing_yaw_drift_deg_per_s': mean(yaw_drifts)}
+    summary = {'standing_rms_drift_m': mean(position_drifts),
+               'standing_rms_yaw_drift_deg': mean(yaw_drifts)}
     series_times = np.concatenate(series_times)
     series = {'standing_distance_from_start': (series_times, np.concatenate(distances_from_start)),
               'standing_yaw_change_deg': (series_times, np.concatenate(yaw_changes_deg))}
@@ -231,13 +240,14 @@ def fall_metrics(test_entry):
 
 
 def upright_metrics(test_data):
-    """6. Series: |torso pitch| and |torso roll| at every sample, in degrees.
-    Summary: their means over the whole test."""
-    absolute_pitch = np.degrees(np.abs(test_data['torso_pitch']))
-    absolute_roll = np.degrees(np.abs(test_data['torso_roll']))
-    summary = {'torso_pitch_deg': mean(absolute_pitch), 'torso_roll_deg': mean(absolute_roll)}
-    series = {'torso_pitch_deg': (test_data['time'], absolute_pitch),
-              'torso_roll_deg': (test_data['time'], absolute_roll)}
+    """6. Series: torso pitch and roll at every sample (signed), in degrees.
+    Summary: sqrt(mean(angle^2)) of each over the whole test - counts both a steady lean and the
+    rocking back and forth."""
+    pitch = np.degrees(test_data['torso_pitch'])
+    roll = np.degrees(test_data['torso_roll'])
+    summary = {'torso_pitch_rms_deg': rms(pitch), 'torso_roll_rms_deg': rms(roll)}
+    series = {'torso_pitch_deg': (test_data['time'], pitch),
+              'torso_roll_deg': (test_data['time'], roll)}
     return summary, series
 
 
@@ -394,7 +404,7 @@ def print_summary(results):
         print(f'  {heading}')
         for metric, stats in stats_by_metric.items():
             spread = f" ± {stats['std']:.3g}" if 'std' in stats else ''
-            print(f"      {metric:32s} {stats['mean']:.3g}{spread}")
+            print(f"      {metric:36s} {stats['mean']:.3g}{spread}")
 
 
 # --- wandb --------------------------------------------------------------------------------------
