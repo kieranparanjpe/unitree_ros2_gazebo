@@ -34,7 +34,8 @@ def launch_setup(context, *args, **kwargs):
         Node(
             package='unitree_isaac_policy',
             executable='policy_node',
-            parameters=[{**common, 'policy_onnx_path': policy_onnx_path, 'wait_for_reset': True}],
+            parameters=[{**common, 'policy_onnx_path': policy_onnx_path, 'wait_for_reset': True,
+                         'step_on_state_stamp': True}],
         ),
         Node(
             package='unitree_isaac_policy',

@@ -30,7 +30,7 @@ CONTROLLER_MANAGER_UPDATE_RATE_HZ = 1000
 # unitree_articulation.h - real hardware substitutes an actual IMU for that same ground
 # truth at deploy time). Add a <noise> block per-axis under the <imu> element below if you
 # want to rehearse real-sensor noise instead.
-IMU_UPDATE_RATE_HZ = 500
+IMU_UPDATE_RATE_HZ = 1000  # same as /joint_states, so every joint sample has an IMU sample with the same stamp
 IMU_GZ_TOPIC = 'imu'
 
 # Pose + foot contact publishing rate when instrumentation is on.

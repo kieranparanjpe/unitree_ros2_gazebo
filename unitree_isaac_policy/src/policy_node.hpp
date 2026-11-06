@@ -11,7 +11,9 @@
 #pragma once
 
 #include <algorithm>
+#include <cmath>
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -130,11 +132,17 @@ namespace unitree_isaac_policy
         // step_dt of *simulation* time the way it did in training. A wall timer ignores
         // use_sim_time, so it fires repeatedly on unchanged observations whenever the sim
         // runs slower than real time.
-        timer_ = rclcpp::create_timer(
-          this, get_clock(), rclcpp::Duration::from_seconds(env_->step_dt),
-          [this]() {
-            on_step();
-          });
+        // Simulation only: step when the sensor data's own stamps cross each step_dt boundary
+        // (maybe_step), instead of on a timer, so every step uses the joint and IMU samples
+        // taken at the boundary - as in training - however late the messages arrive.
+        step_on_state_stamp_ = declare_parameter<bool>("step_on_state_stamp", false);
+        if (!step_on_state_stamp_) {
+          timer_ = rclcpp::create_timer(
+            this, get_clock(), rclcpp::Duration::from_seconds(env_->step_dt),
+            [this]() {
+              on_step();
+            });
+        }
 
         RCLCPP_INFO(
           get_logger(), "policy_node ready: %zu joints, step_dt=%.4fs, wait_for_reset=%s",
@@ -171,6 +179,11 @@ namespace unitree_isaac_policy
             articulation_->set_joint_vel(joint_index, static_cast<float>(msg->velocity[msg_index]));
           }
         }
+
+        if (step_on_state_stamp_) {
+          last_joint_time_ = rclcpp::Time(msg->header.stamp).nanoseconds();
+          maybe_step();
+        }
       }
 
       void on_imu(const sensor_msgs::msg::Imu::ConstSharedPtr & msg)
@@ -190,6 +203,25 @@ namespace unitree_isaac_policy
             static_cast<float>(msg->angular_velocity.z)
           )
         );
+
+        if (step_on_state_stamp_) {
+          last_imu_time_ = rclcpp::Time(msg->header.stamp).nanoseconds();
+          maybe_step();
+        }
+      }
+
+      // Steps once both the joint and IMU data have reached the next boundary. The first data
+      // after a reset sets the first boundary, so steps stay aligned to the reset.
+      void maybe_step()
+      {
+        if (!next_step_time_) {
+          next_step_time_ = last_joint_time_;
+        }
+        if (last_joint_time_ < *next_step_time_ || last_imu_time_ < *next_step_time_) {
+          return;
+        }
+        on_step();
+        *next_step_time_ += static_cast<int64_t>(std::llround(env_->step_dt * 1e9));
       }
 
       // The robot was just teleported, so everything remembered about its motion describes a
@@ -201,6 +233,7 @@ namespace unitree_isaac_policy
         phase_ = Phase::ResetTriggered;
         joint_state_msg_count_ = 0;
         imu_msg_count_ = 0;
+        next_step_time_.reset();
         RCLCPP_INFO(get_logger(), "Reset received - re-seeding on post-reset data.");
       }
 
@@ -264,6 +297,12 @@ namespace unitree_isaac_policy
       Phase phase_ = Phase::ResetTriggered;
       size_t joint_state_msg_count_ = 0;
       size_t imu_msg_count_ = 0;
+
+      // step_on_state_stamp mode: sensor stamps (ns) and the next step boundary.
+      bool step_on_state_stamp_ = false;
+      int64_t last_joint_time_ = 0;
+      int64_t last_imu_time_ = 0;
+      std::optional<int64_t> next_step_time_;
 
       // ROS interfaces
       rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joint_state_sub_;
