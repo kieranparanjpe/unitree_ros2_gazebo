@@ -31,6 +31,7 @@ no `unitree_rl_lab` checkout.
 | `unitree_isaac_policy` | C++ | Policy stack A — `policy_node` + `pd_node` |
 | `unitree_policy_bridge` | C++ | Policy stack B — `policy_bridge_node` |
 | `unitree_keyboard_teleop` | C++ | Optional. `keyboard_controller` — drive the robot from the keyboard |
+| `unitree_gz_eval` | Python | Optional. Runs a fixed test suite against a policy and scores it — see [Evaluating a policy](#evaluating-a-policy) |
 
 ### `unitree_gz_description`
 
@@ -365,6 +366,124 @@ ros2 service call /gz_reset_node/reset std_srvs/srv/Trigger
 This restores joint positions, joint velocities, base pose and base velocity, and publishes
 `/policy_reset` so the policy drops its observation history and re-seeds on post-reset data.
 Verified recovering from both standing and walking.
+
+## Evaluating a policy
+
+`unitree_gz_eval` runs every policy through the same fixed set of velocity-command tests,
+records where the robot actually went, and scores it. It has two halves:
+
+- **The runner** (a ROS node, started by `eval.launch.py`): resets the robot before each test,
+  publishes the test's `/cmd_vel` schedule, applies any scheduled pushes, stops a test early if
+  the robot falls, and saves the robot's poses from the simulator.
+- **The analysis** (`unitree_gz_eval/analysis/`, a plain Python project, no ROS): turns the
+  saved poses into metrics and uploads them to wandb.
+
+Only `unitree_isaac_policy` is supported — the launch file starts that stack itself.
+
+### 1. Run the tests
+
+Make sure no other simulation is running (two worlds publish on the same topics), then:
+
+```bash
+source /opt/ros/jazzy/setup.bash
+source ~/jazzy_ws/install/setup.bash
+
+ros2 launch unitree_gz_eval eval.launch.py \
+  policy_onnx_path:=/path/to/<policy_dir>/exported/policy.onnx \
+  urdf_path:=/path/to/unitree_ros/robots/h2_description/H2.urdf
+```
+
+This starts the simulator, the policy, a bridge for the simulator's pose data and the runner.
+Everything shuts down by itself when the last test finishes. Progress is logged per test:
+
+```
+[eval_runner]: [2/36] forward_back (repeat 1): ok
+[eval_runner]: [12/36] pushes (repeat 1): fell at 17.72s
+```
+
+| Argument | Default | Meaning |
+| --- | --- | --- |
+| `policy_onnx_path` | *(required)* | Exported `policy.onnx`; `deploy.yaml` is found the same way as for `all.launch.py` |
+| `urdf_path` | *(required)* | The robot's bare URDF, with `meshes/` next to it |
+| `robot` | `h2` | Matches `unitree_gz_description/robots/<name>.yaml` |
+| `headless` | `true` | `true`: Gazebo server only, no window. `false`: open the Gazebo GUI to watch |
+| `suite` | `default` | A suite name under `unitree_gz_eval/suites/`, or an absolute path to a suite file |
+| `output_dir` | `<policy_dir>/eval/<suite>_<timestamp>` | Where results are written |
+
+**Headless or not.** Headless is the default because nobody needs to watch an evaluation and
+the GUI costs CPU, which slows the simulation down. To watch one:
+
+```bash
+ros2 launch unitree_gz_eval eval.launch.py headless:=false policy_onnx_path:=... urdf_path:=...
+```
+
+**How long it takes.** The default suite is 12 tests, about 156 s of simulated time, run 3
+times. The simulator runs slower than real time, so a full evaluation takes roughly 15-20
+minutes.
+
+**Stopping early.** Ctrl-C stops everything. `meta.json` is rewritten after every test, so the
+tests that finished can still be analysed.
+
+**What is written** to `output_dir`:
+
+| File | Contents |
+| --- | --- |
+| `suite.yaml` | Copy of the suite that was run |
+| `meta.json` | Policy, robot, suite name and hash, and per test: repeat, status (`ok`, `fell`, `aborted`), fall time, command segments, pushes, the reset check |
+| `NN_<test>_r<repeat>.npz` | `pose_times`, `base_poses` (world frame), `torso_poses_in_base`, `foot_poses_in_base`, sampled at 200 Hz; rows are `x y z qx qy qz qw` |
+
+A test is `aborted` if the robot was not back at the origin, upright and at rest after its
+reset; it is then skipped and not scored.
+
+### 2. Score it and upload to wandb
+
+The analysis is its own [uv](https://docs.astral.sh/uv/) project. `env -u PYTHONPATH` is
+needed whenever ROS is sourced in the shell: ROS's `PYTHONPATH` otherwise leaks into uv's
+environment and breaks it.
+
+```bash
+cd unitree_gz_eval/analysis
+env -u PYTHONPATH uv run wandb login            # once per machine
+
+env -u PYTHONPATH uv run analyze.py <output_dir>              # score + upload
+env -u PYTHONPATH uv run analyze.py <output_dir> --no-wandb   # score only
+```
+
+It prints every metric per test (mean ± std over repeats) and writes `results.json` into
+`output_dir`. The upload goes to `--entity` / `--project` (defaults: `WANDB_ENTITY` and
+`WANDB_PROJECT` at the top of `analyze.py`).
+
+Each evaluation becomes one wandb **group** (e.g. `09-17-v2__default_20261106-023605`) of
+four runs. All of them log the same series keys, so charts overlay them:
+
+| Run | Job type | Summary | Series (`<test>/<metric>` against `<test>/time`) |
+| --- | --- | --- | --- |
+| `09-17-v2__default` | `aggregate` | Mean and std over repeats: `overall/<metric>/mean`, `.../std`, and `by_test/<test>/<metric>/mean`, `.../std` | Averaged over repeats |
+| `09-17-v2__default__r1` (r2, r3) | `repeat` | That repeat's own values: `overall/<metric>`, `by_test/<test>/<metric>` | That repeat's |
+
+`overall` is a metric averaged over all tests that have it, each test counting equally.
+**Compare policies on the `aggregate` runs** (filter the runs list on job type); open an
+evaluation's `repeat` runs when the detail matters. Each run's config has `policy`,
+`suite_name`, `suite_hash` and `evaluation`, and its tags are `suite:<hash>` plus `fell:<test>` /
+`aborted:<test>` — only compare runs with the same suite hash. `results.json` (attached to every
+run) has the same numbers, nested as `overall`, `by_test/<test>` and `per_repeat/<metric>/r<k>`.
+
+The metrics and their exact formulas are in the docstrings of `analyze.py`
+(`tracking_metrics`, `standing_metrics`, `fall_metrics`, `upright_metrics`, `gait_metrics`):
+velocity and heading tracking, drift while standing, falls and push survival, torso lean, and
+stride length, stride time and step width.
+
+Tests for the analysis:
+
+```bash
+env -u PYTHONPATH uv run --group dev pytest -q test_analyze.py
+```
+
+### Changing the tests
+
+Copy `unitree_gz_eval/suites/default.yaml`, edit it, and pass its absolute path as `suite:=`.
+The file explains its own format. Any edit changes the suite's hash, so results from different
+suites never land in the same wandb group.
 
 ## Adding another robot
 

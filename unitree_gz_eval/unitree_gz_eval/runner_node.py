@@ -1,7 +1,8 @@
 # Runs every test of a suite against whatever policy is listening on /cmd_vel. Per test:
 #   reset (gz_reset_node's service) -> check that the first pose after it is at the origin and
 #   upright, and that the base isn't moving over the next 0.1 s -> record: publish the scheduled
-#   /cmd_vel, fire pushes, stop early on a fall -> save <NN>_<name>.npz.
+#   /cmd_vel, fire pushes, stop early on a fall -> save base, torso and foot poses to
+#   <NN>_<name>_r<repeat>.npz. The command schedule and pushes go to meta.json.
 # meta.json is rewritten after every test, so an interrupted run still leaves usable results.
 #
 # Callbacks only store messages; they are turned into arrays once, when a test is saved. All
@@ -11,7 +12,7 @@ import math
 import os
 import shutil
 import time
-import xml.etree.ElementTree as ET
+import xml.etree.ElementTree as ElementTree
 from enum import Enum, auto
 
 import numpy as np
@@ -21,8 +22,6 @@ from geometry_msgs.msg import Twist
 from rclpy.node import Node
 from rclpy.parameter import Parameter
 from rclpy.qos import DurabilityPolicy, QoSProfile
-from ros_gz_interfaces.msg import Contacts
-from sensor_msgs.msg import JointState
 from std_msgs.msg import Empty
 from std_srvs.srv import Trigger
 from tf2_msgs.msg import TFMessage
@@ -38,239 +37,241 @@ class Phase(Enum):
     RUNNING = auto()
 
 
-def _stamp(header) -> float:
+def _stamp_seconds(header) -> float:
     return header.stamp.sec + header.stamp.nanosec * 1e-9
 
 
-def _tilt_deg(q) -> float:
-    return math.degrees(math.acos(max(-1.0, min(1.0, 1.0 - 2.0 * (q.x * q.x + q.y * q.y)))))
+def _tilt_deg(orientation) -> float:
+    cos_tilt = 1.0 - 2.0 * (orientation.x * orientation.x + orientation.y * orientation.y)
+    return math.degrees(math.acos(max(-1.0, min(1.0, cos_tilt))))
 
 
-def _yaw_deg(q) -> float:
-    return math.degrees(math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z)))
+def _yaw_deg(orientation) -> float:
+    sin_yaw = 2 * (orientation.w * orientation.z + orientation.x * orientation.y)
+    cos_yaw = 1 - 2 * (orientation.y * orientation.y + orientation.z * orientation.z)
+    return math.degrees(math.atan2(sin_yaw, cos_yaw))
 
 
 class EvalRunner(Node):
     def __init__(self):
         super().__init__('eval_runner')
         suite_path = self.declare_parameter('suite_path', '').value
-        self._out = self.declare_parameter('output_dir', '').value
-        policy_onnx = self.declare_parameter('policy_onnx_path', '').value
+        self._output_dir = self.declare_parameter('output_dir', '').value
+        policy_onnx_path = self.declare_parameter('policy_onnx_path', '').value
         urdf_path = self.declare_parameter('urdf_path', '').value
-        self._world = self.declare_parameter('world_name', 'default').value
-        self._model = self.declare_parameter('model_name', 'h2').value
+        self._world_name = self.declare_parameter('world_name', 'default').value
+        self._model_name = self.declare_parameter('model_name', 'h2').value
         self._foot_links = self.declare_parameter('foot_links', Parameter.Type.STRING_ARRAY).value
         self._torso_link = self.declare_parameter('torso_link', 'torso_link').value
-        contact_topics = self.declare_parameter(
-            'contact_topics', Parameter.Type.STRING_ARRAY).value
         pose_topic = self.declare_parameter('pose_topic', '/model/h2/pose').value
         reset_service = self.declare_parameter('reset_service', '/gz_reset_node/reset').value
 
         self._suite = load_suite(suite_path)
         # Whole suite, then whole suite again: anything that drifts over a session (CPU load)
         # spreads evenly over the tests.
-        self._runs = [(rep, n, test) for rep in range(self._suite.repeats)
-                      for n, test in enumerate(self._suite.tests)]
-        os.makedirs(self._out, exist_ok=True)
-        shutil.copy(suite_path, os.path.join(self._out, 'suite.yaml'))
+        self._scheduled_runs = [
+            (repeat_index, test_index, test)
+            for repeat_index in range(self._suite.repeats)
+            for test_index, test in enumerate(self._suite.tests)]
+        os.makedirs(self._output_dir, exist_ok=True)
+        shutil.copy(suite_path, os.path.join(self._output_dir, 'suite.yaml'))
 
-        urdf = ET.parse(urdf_path).getroot()
-        self._mass = sum(float(m.get('value')) for m in urdf.iter('mass'))
+        urdf = ElementTree.parse(urdf_path).getroot()
+        self._robot_mass = sum(float(mass.get('value')) for mass in urdf.iter('mass'))
         # The URDF root link (the pelvis) is the model's canonical link, and its frame is the
         # model frame (checked: identity over a whole run), so the model pose Gazebo publishes
         # is the pelvis pose.
-        children = {j.find('child').get('link') for j in urdf.findall('joint')}
-        self._base_link = next(l.get('name') for l in urdf.findall('link')
-                               if l.get('name') not in children)
-        world_sdf = os.path.join(
-            get_package_share_directory('unitree_gz_bringup'), 'worlds', f'{self._world}.sdf')
-        self._physics_step = float(
-            ET.parse(world_sdf).getroot().find('.//physics/max_step_size').text)
+        child_links = {joint.find('child').get('link') for joint in urdf.findall('joint')}
+        self._base_link = next(link.get('name') for link in urdf.findall('link')
+                               if link.get('name') not in child_links)
+        world_sdf_path = os.path.join(
+            get_package_share_directory('unitree_gz_bringup'), 'worlds', f'{self._world_name}.sdf')
+        self._physics_step_seconds = float(
+            ElementTree.parse(world_sdf_path).getroot().find('.//physics/max_step_size').text)
 
-        policy_dir = os.path.dirname(os.path.dirname(policy_onnx))
+        policy_dir = os.path.dirname(os.path.dirname(policy_onnx_path))
         self._meta = {
             'suite': {'name': self._suite.name, 'hash': self._suite.hash},
             'policy': {'name': os.path.basename(policy_dir), 'dir': policy_dir},
-            'robot': {'model': self._model, 'mass': self._mass, 'base_link': self._base_link,
+            'robot': {'model': self._model_name, 'mass': self._robot_mass,
+                      'base_link': self._base_link, 'torso_link': self._torso_link,
                       'foot_links': list(self._foot_links)},
             'started': time.strftime('%Y-%m-%dT%H:%M:%S'),
             'finished': False,
             'tests': [],
         }
 
-        self._cmd_pub = self.create_publisher(Twist, '/cmd_vel', 10)
+        self._cmd_vel_publisher = self.create_publisher(Twist, '/cmd_vel', 10)
         self._reset_client = self.create_client(Trigger, reset_service)
         self.create_subscription(TFMessage, pose_topic, self._on_poses, 50)
-        self.create_subscription(JointState, '/joint_states', self._on_joints, 200)
-        for i, topic in enumerate(contact_topics):
-            self.create_subscription(
-                Contacts, topic, lambda msg, i=i: self._on_contacts(i, msg), 200)
         # gz_reset_node's startup reset (latched): the stack is usable once it has fired.
         self.create_subscription(
             Empty, '/policy_reset', self._on_policy_reset,
             QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
 
-        self._last_pose = None
+        self._latest_poses = None
         self._startup_reset_seen = False
         self._recording = False
-        self._buf = None
-        self._reset = None
+        self._recorded = None
+        self._reset_report = None
         self._pusher = None
         self._phase = Phase.STARTING
-        self._idx = 0
+        self._run_index = 0
         self.create_timer(1.0 / self._suite.cmd_rate, self._tick)
         self.get_logger().info(
             f'suite "{self._suite.name}" ({self._suite.hash}): {len(self._suite.tests)} tests x '
-            f'{self._suite.repeats} repeats -> {self._out}')
+            f'{self._suite.repeats} repeats -> {self._output_dir}')
 
     # --- callbacks: store, nothing else -------------------------------------------------------
 
     def _on_poses(self, msg):
-        self._last_pose = msg
+        self._latest_poses = msg
         if self._recording:
-            self._buf['poses'].append(msg)
-
-    def _on_joints(self, msg):
-        if self._recording:
-            self._buf['joints'].append(msg)
-
-    def _on_contacts(self, i, msg):
-        if self._recording:
-            self._buf['contacts'][i].append(msg)
+            self._recorded['poses'].append(msg)
 
     def _on_policy_reset(self, _msg):
         self._startup_reset_seen = True
 
     # --- test sequence ------------------------------------------------------------------------
 
-    def _now(self):
+    def _sim_time(self):
         return self.get_clock().now().nanoseconds * 1e-9
 
     def _base_pose(self):
-        """(t, position, orientation) of the pelvis, from the latest poses."""
-        for tf in self._last_pose.transforms:
-            if tf.child_frame_id == self._model:
-                return _stamp(tf.header), tf.transform.translation, tf.transform.rotation
+        """(stamp, position, orientation) of the pelvis, from the latest poses."""
+        for transform in self._latest_poses.transforms:
+            if transform.child_frame_id == self._model_name:
+                return (_stamp_seconds(transform.header), transform.transform.translation,
+                        transform.transform.rotation)
         return None
 
-    def _publish_cmd(self, cmd, now):
+    def _publish_cmd_vel(self, command):
         msg = Twist()
-        msg.linear.x, msg.linear.y, msg.angular.z = cmd
-        self._cmd_pub.publish(msg)
-        if self._recording:
-            self._buf['cmd'].append((now, cmd))
+        msg.linear.x, msg.linear.y, msg.angular.z = command
+        self._cmd_vel_publisher.publish(msg)
 
     def _tick(self):
-        now = self._now()
-        test = self._runs[self._idx][2]
+        sim_time = self._sim_time()
+        test = self._scheduled_runs[self._run_index][2]
 
         if self._phase == Phase.STARTING:
-            if (self._startup_reset_seen and self._last_pose
+            if (self._startup_reset_seen and self._latest_poses
                     and self._reset_client.service_is_ready()):
-                self._pusher = Pusher(self._world, self._base_link, self._physics_step)
-                self._sim_start, self._wall_start = now, time.time()
+                self._pusher = Pusher(self._world_name, self._base_link, self._physics_step_seconds)
+                self._suite_start_sim_time, self._suite_start_wall_time = sim_time, time.time()
                 self._start_reset()
 
         elif self._phase == Phase.RESETTING:
-            self._publish_cmd((0.0, 0.0, 0.0), now)
+            self._publish_cmd_vel((0.0, 0.0, 0.0))
             if self._reset_future.done():
                 result = self._reset_future.result()
                 if not result.success:
                     self._finish(test, 'aborted', reason=f'reset failed: {result.message}')
                 else:
-                    self._check_start = None
-                    self._check_from = now
+                    self._first_pose_after_reset = None
+                    self._reset_done_sim_time = sim_time
                     self._phase = Phase.CHECKING
 
         elif self._phase == Phase.CHECKING:
             # Measures the teleport, not the policy: shortly after the reset, using only poses
             # stamped after it (older ones may still be queued).
-            self._publish_cmd((0.0, 0.0, 0.0), now)
+            self._publish_cmd_vel((0.0, 0.0, 0.0))
             pose = self._base_pose()
-            if pose is None or pose[0] < self._check_from:
+            if pose is None or pose[0] < self._reset_done_sim_time:
                 return
-            if self._check_start is None:
-                self._check_start = pose
-            if pose[0] - self._check_start[0] < self._suite.reset_check['after']:
+            if self._first_pose_after_reset is None:
+                self._first_pose_after_reset = pose
+            if pose[0] - self._first_pose_after_reset[0] < self._suite.reset_check['after']:
                 return
-            self._reset = self._reset_report(self._check_start, pose)
-            if not self._reset['ok']:
+            self._reset_report = self._check_reset(self._first_pose_after_reset, pose)
+            if not self._reset_report['ok']:
                 self._finish(test, 'aborted', reason='reset check failed')
                 return
-            self._buf = {'poses': [], 'joints': [], 'cmd': [], 'pushes': [],
-                         'contacts': [[] for _ in self._foot_links]}
+            self._recorded = {'poses': []}
             self._recording = True
-            self._t0, self._wall_t0 = now, time.time()
-            self._pushes_left = list(test.pushes)
+            self._test_start_sim_time, self._test_start_wall_time = sim_time, time.time()
+            self._pending_pushes = list(test.pushes)
             self._phase = Phase.RUNNING
 
         elif self._phase == Phase.RUNNING:
-            elapsed = now - self._t0
-            if elapsed >= test.duration:
+            time_into_test = sim_time - self._test_start_sim_time
+            if time_into_test >= test.duration:
                 self._finish(test, 'ok')
                 return
-            self._publish_cmd(test.cmd_at(elapsed), now)
-            while self._pushes_left and self._pushes_left[0].t <= elapsed:
-                push = self._pushes_left.pop(0)
+            self._publish_cmd_vel(test.cmd_at(time_into_test))
+            while self._pending_pushes and self._pending_pushes[0].t <= time_into_test:
+                push = self._pending_pushes.pop(0)
                 # Impulse mass * dv changes the robot's centre-of-mass velocity by dv, as Isaac's
                 # push_by_setting_velocity does by adding dv to the root velocity.
-                self._pusher.push([self._mass * push.dv[0], self._mass * push.dv[1], 0.0])
-                self._buf['pushes'].append((now, push.dv))
-            _, pos, quat = self._base_pose()
-            fall = self._suite.fall
-            if pos.z < fall['min_pelvis_height'] or _tilt_deg(quat) > fall['max_tilt_deg']:
-                self._finish(test, 'fell', fall_t=elapsed)
+                self._pusher.push([self._robot_mass * push.dv[0],
+                                   self._robot_mass * push.dv[1], 0.0])
+            _, position, orientation = self._base_pose()
+            fall_limits = self._suite.fall
+            if (position.z < fall_limits['min_pelvis_height']
+                    or _tilt_deg(orientation) > fall_limits['max_tilt_deg']):
+                self._finish(test, 'fell', fall_time=time_into_test)
 
     def _start_reset(self):
         self._reset_future = self._reset_client.call_async(Trigger.Request())
         self._phase = Phase.RESETTING
 
-    def _reset_report(self, first, later):
+    def _check_reset(self, first_pose, later_pose):
         # Pose is judged on the first sample after the reset - that is the teleport. By `after`
         # the robot has dropped ~1 cm onto its feet and the policy has turned it 0.4-2.4 deg
         # doing so. Speed spans both samples, so leftover momentum still shows.
-        t0, p0, q = first
-        t, p, _ = later
-        lim = self._suite.reset_check
+        first_stamp, first_position, first_orientation = first_pose
+        later_stamp, later_position, _ = later_pose
+        limits = self._suite.reset_check
+        distance_moved = math.dist(
+            (later_position.x, later_position.y, later_position.z),
+            (first_position.x, first_position.y, first_position.z))
         report = {
-            'xy': math.hypot(p0.x, p0.y),
-            'yaw_deg': _yaw_deg(q),
-            'tilt_deg': _tilt_deg(q),
-            'pelvis_height': p0.z,
-            'speed': math.dist((p.x, p.y, p.z), (p0.x, p0.y, p0.z)) / max(t - t0, 1e-6),
+            'distance_from_origin': math.hypot(first_position.x, first_position.y),
+            'yaw_deg': _yaw_deg(first_orientation),
+            'tilt_deg': _tilt_deg(first_orientation),
+            'pelvis_height': first_position.z,
+            'speed': distance_moved / max(later_stamp - first_stamp, 1e-6),
         }
-        report['ok'] = (report['xy'] <= lim['max_xy']
-                        and abs(report['yaw_deg']) <= lim['max_yaw_deg']
-                        and report['tilt_deg'] <= lim['max_tilt_deg']
-                        and report['pelvis_height'] >= lim['min_pelvis_height']
-                        and report['speed'] <= lim['max_speed'])
+        report['ok'] = (report['distance_from_origin'] <= limits['max_xy']
+                        and abs(report['yaw_deg']) <= limits['max_yaw_deg']
+                        and report['tilt_deg'] <= limits['max_tilt_deg']
+                        and report['pelvis_height'] >= limits['min_pelvis_height']
+                        and report['speed'] <= limits['max_speed'])
         return report
 
-    def _finish(self, test, status, reason=None, fall_t=None):
+    def _finish(self, test, status, reason=None, fall_time=None):
         self._recording = False
-        self._publish_cmd((0.0, 0.0, 0.0), self._now())
-        rep, n, _ = self._runs[self._idx]
+        self._publish_cmd_vel((0.0, 0.0, 0.0))
+        repeat_index, test_index, _ = self._scheduled_runs[self._run_index]
         entry = {
-            'name': test.name, 'repeat': rep + 1, 'status': status, 'reason': reason, 'fall_t': fall_t,
+            'name': test.name,
+            'repeat': repeat_index + 1,
+            'status': status,
+            'reason': reason,
+            'fall_time': fall_time,
             'duration': test.duration,
-            'segments': [{'t0': s.t0, 't1': s.t1, 'cmd': list(s.cmd)} for s in test.segments],
-            'pushes': [{'t': p.t, 'dv': list(p.dv)} for p in test.pushes],
-            'reset_check': self._reset,
+            'segments': [{'start_time': segment.t0, 'end_time': segment.t1,
+                          'command': list(segment.cmd)} for segment in test.segments],
+            'pushes': [{'time': push.t, 'velocity_change': list(push.dv)}
+                       for push in test.pushes],
+            'reset_check': self._reset_report,
         }
         if status != 'aborted':
-            entry['file'] = f'{n + 1:02d}_{test.name}_r{rep + 1}.npz'
-            entry['rtf'] = (self._now() - self._t0) / max(time.time() - self._wall_t0, 1e-6)
-            self._save(os.path.join(self._out, entry['file']))
-        self._reset = None
+            entry['file'] = f'{test_index + 1:02d}_{test.name}_r{repeat_index + 1}.npz'
+            entry['real_time_factor'] = ((self._sim_time() - self._test_start_sim_time)
+                                         / max(time.time() - self._test_start_wall_time, 1e-6))
+            self._save(os.path.join(self._output_dir, entry['file']))
+        self._reset_report = None
         self._meta['tests'].append(entry)
         self._write_meta()
         self.get_logger().info(
-            f'[{self._idx + 1}/{len(self._runs)}] {test.name} (repeat {rep + 1}): {status}'
+            f'[{self._run_index + 1}/{len(self._scheduled_runs)}] {test.name} '
+            f'(repeat {repeat_index + 1}): {status}'
             + (f' ({reason})' if reason else '')
-            + (f' at {fall_t:.2f}s' if fall_t is not None else ''))
+            + (f' at {fall_time:.2f}s' if fall_time is not None else ''))
 
-        self._idx += 1
-        if self._idx < len(self._runs):
+        self._run_index += 1
+        if self._run_index < len(self._scheduled_runs):
             self._start_reset()
         else:
             self._meta['finished'] = True
@@ -280,81 +281,39 @@ class EvalRunner(Node):
     # --- messages -> arrays, once per test ----------------------------------------------------
 
     def _save(self, path):
-        b, t0 = self._buf, self._t0
-        arrays = {
-            'cmd_t': np.array([c[0] for c in b['cmd']]) - t0,
-            'cmd': np.array([c[1] for c in b['cmd']]).reshape(-1, 3),
-            'push_t': np.array([p[0] for p in b['pushes']]) - t0,
-            'push_dv': np.array([p[1] for p in b['pushes']]).reshape(-1, 2),
-            'base_link': np.array(self._base_link),
-            'foot_links': np.array(self._foot_links),
-            'torso_link': np.array(self._torso_link),
-        }
-        arrays.update(self._poses_to_arrays(b['poses'], t0))
-        arrays.update(self._joints_to_arrays(b['joints'], t0))
-        for i, msgs in enumerate(b['contacts']):
-            arrays[f'contact{i}_t'] = np.array([_stamp(m.header) for m in msgs]) - t0
-            arrays[f'contact{i}_fz'] = np.array(
-                [self._foot_fz(m, self._foot_links[i]) for m in msgs], dtype=np.float32)
-        np.savez_compressed(path, **arrays)
-
-    def _poses_to_arrays(self, msgs, t0):
-        # As published: the model's (= pelvis) world pose, and the torso's and feet's poses in
-        # the model frame - the only links the analysis uses. ros_gz_bridge names links
-        # "<model>/<link>".
-        prefix = f'{self._model}/'
-        names = [self._torso_link, *self._foot_links]
-        index = {n: k for k, n in enumerate(names)}
-        t = np.zeros(len(msgs))
-        model = np.zeros((len(msgs), 7))
-        links = np.zeros((len(msgs), len(names), 7))
-        for row, msg in enumerate(msgs):
-            for tf in msg.transforms:
-                tr, q = tf.transform.translation, tf.transform.rotation
-                pose = (tr.x, tr.y, tr.z, q.x, q.y, q.z, q.w)
-                if tf.child_frame_id == self._model:
-                    t[row] = _stamp(tf.header)
-                    model[row] = pose
-                elif tf.child_frame_id[len(prefix):] in index:
-                    links[row, index[tf.child_frame_id[len(prefix):]]] = pose
-        return {'pose_t': t - t0, 'link_names': np.array(names),
-                'model_pose': model.astype(np.float32),
-                'link_pose_in_model': links.astype(np.float32)}
-
-    @staticmethod
-    def _joints_to_arrays(msgs, t0, period=0.005):
-        # 200 Hz is plenty for power/torque/jerk; /joint_states arrives at up to 1 kHz.
-        kept, last = [], -1.0
-        for m in msgs:
-            if _stamp(m.header) >= last + period - 1e-6:
-                kept.append(m)
-                last = _stamp(m.header)
-        msgs = kept
-        return {
-            'joint_t': np.array([_stamp(m.header) for m in msgs]) - t0,
-            'joint_names': np.array(msgs[0].name),
-            'joint_vel': np.array([m.velocity for m in msgs], dtype=np.float32),
-            'joint_effort': np.array([m.effort for m in msgs], dtype=np.float32),
-        }
-
-    @staticmethod
-    def _foot_fz(msg, link):
-        # Vertical ground force on the foot, summed over its contact points. Each contact pair
-        # reports the wrench on both bodies; take the one on the foot's side.
-        fz = 0.0
-        for contact in msg.contacts:
-            on_body_1 = f'/{link}/' in contact.collision1.name.replace('::', '/')
-            for w in contact.wrenches:
-                fz += (w.body_1_wrench if on_body_1 else w.body_2_wrench).force.z
-        return abs(fz)
+        # Poses as published: the model's world pose (the model frame is the pelvis frame), and
+        # the torso's and feet's poses in the model frame. ros_gz_bridge names links
+        # "<model>/<link>". Pose rows are (x, y, z, qx, qy, qz, qw).
+        pose_msgs = self._recorded['poses']
+        frame_names = [self._model_name] + [
+            f'{self._model_name}/{link}' for link in (self._torso_link, *self._foot_links)]
+        pose_times = np.zeros(len(pose_msgs))
+        poses = np.zeros((len(pose_msgs), len(frame_names), 7))
+        for sample_index, msg in enumerate(pose_msgs):
+            transform_by_frame = {transform.child_frame_id: transform
+                                  for transform in msg.transforms}
+            pose_times[sample_index] = _stamp_seconds(transform_by_frame[self._model_name].header)
+            for frame_index, frame_name in enumerate(frame_names):
+                translation = transform_by_frame[frame_name].transform.translation
+                rotation = transform_by_frame[frame_name].transform.rotation
+                poses[sample_index, frame_index] = (
+                    translation.x, translation.y, translation.z,
+                    rotation.x, rotation.y, rotation.z, rotation.w)
+        np.savez_compressed(path,
+                            pose_times=pose_times - self._test_start_sim_time,
+                            base_poses=poses[:, 0],
+                            torso_poses_in_base=poses[:, 1],
+                            foot_poses_in_base=poses[:, 2:])
 
     def _write_meta(self):
-        sim, wall = self._now() - self._sim_start, time.time() - self._wall_start
-        self._meta.update({'sim_seconds': sim, 'wall_seconds': wall, 'rtf': sim / max(wall, 1e-6)})
-        tmp = os.path.join(self._out, 'meta.json.tmp')
-        with open(tmp, 'w') as f:
-            json.dump(self._meta, f, indent=2)
-        os.replace(tmp, os.path.join(self._out, 'meta.json'))
+        sim_seconds = self._sim_time() - self._suite_start_sim_time
+        wall_seconds = time.time() - self._suite_start_wall_time
+        self._meta.update({'sim_seconds': sim_seconds, 'wall_seconds': wall_seconds,
+                           'real_time_factor': sim_seconds / max(wall_seconds, 1e-6)})
+        temporary_path = os.path.join(self._output_dir, 'meta.json.tmp')
+        with open(temporary_path, 'w') as meta_file:
+            json.dump(self._meta, meta_file, indent=2)
+        os.replace(temporary_path, os.path.join(self._output_dir, 'meta.json'))
 
 
 def main():

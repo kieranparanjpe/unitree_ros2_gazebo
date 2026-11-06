@@ -21,11 +21,7 @@ from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
-from unitree_gz_description.generate_urdf import (
-    POSE_GZ_TOPIC_FMT,
-    contact_gz_topic,
-    load_robot_config,
-)
+from unitree_gz_description.generate_urdf import POSE_GZ_TOPIC_FMT, load_robot_config
 
 
 def launch_setup(context, *args, **kwargs):
@@ -47,7 +43,6 @@ def launch_setup(context, *args, **kwargs):
     robot_cfg = load_robot_config(get_package_share_directory('unitree_gz_description'), robot)
     foot_links = list(robot_cfg['foot_links'])
     pose_topic = POSE_GZ_TOPIC_FMT.format(model=robot)
-    contact_topics = [contact_gz_topic(link) for link in foot_links]
 
     stack = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(os.path.join(
@@ -65,8 +60,7 @@ def launch_setup(context, *args, **kwargs):
         package='ros_gz_bridge',
         executable='parameter_bridge',
         name='eval_ground_truth_bridge',
-        arguments=[f'{pose_topic}@tf2_msgs/msg/TFMessage[gz.msgs.Pose_V']
-        + [f'{t}@ros_gz_interfaces/msg/Contacts[gz.msgs.Contacts' for t in contact_topics],
+        arguments=[f'{pose_topic}@tf2_msgs/msg/TFMessage[gz.msgs.Pose_V'],
     )
 
     runner = Node(
@@ -82,7 +76,6 @@ def launch_setup(context, *args, **kwargs):
             'model_name': robot,
             'foot_links': foot_links,
             'torso_link': robot_cfg['torso_link'],
-            'contact_topics': contact_topics,
             'pose_topic': pose_topic,
         }],
     )

@@ -5,7 +5,7 @@
   <version>0.0.1</version>
   <description>
     Runs a fixed suite of velocity-command tests against whatever policy the simulator stack is
-    running, and records simulator ground truth (link poses, foot contact forces, joint states)
+    running, and records simulator ground truth (base, torso and foot poses)
     per test. Only depends on the existing packages - nothing depends on it. Metrics and wandb
     upload live in analysis/, which is plain Python and not part of this ROS package.
   </description>
@@ -18,10 +18,8 @@
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
   <exec_depend>ros_gz_bridge</exec_depend>
-  <exec_depend>ros_gz_interfaces</exec_depend>
   <exec_depend>rclpy</exec_depend>
   <exec_depend>geometry_msgs</exec_depend>
-  <exec_depend>sensor_msgs</exec_depend>
   <exec_depend>std_msgs</exec_depend>
   <exec_depend>std_srvs</exec_depend>
   <exec_depend>tf2_msgs</exec_depend>
