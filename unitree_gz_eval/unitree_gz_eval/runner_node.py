@@ -1,7 +1,7 @@
 # Runs every test of a suite against whatever policy is listening on /cmd_vel. Per test:
-#   reset (gz_reset_node's service) -> check, 0.1 s later, that the base is back at the origin,
-#   upright and not moving -> record: publish the scheduled /cmd_vel, fire pushes, stop early on a
-#   fall -> save <NN>_<name>.npz.
+#   reset (gz_reset_node's service) -> check that the first pose after it is at the origin and
+#   upright, and that the base isn't moving over the next 0.1 s -> record: publish the scheduled
+#   /cmd_vel, fire pushes, stop early on a fall -> save <NN>_<name>.npz.
 # meta.json is rewritten after every test, so an interrupted run still leaves usable results.
 #
 # Callbacks only store messages; they are turned into arrays once, when a test is saved. All
@@ -190,10 +190,10 @@ class EvalRunner(Node):
             if pose is None or pose[0] < self._check_from:
                 return
             if self._check_start is None:
-                self._check_start = (pose[0], pose[1].x, pose[1].y, pose[1].z)
+                self._check_start = pose
             if pose[0] - self._check_start[0] < self._suite.reset_check['after']:
                 return
-            self._reset = self._reset_report(pose)
+            self._reset = self._reset_report(self._check_start, pose)
             if not self._reset['ok']:
                 self._finish(test, 'aborted', reason='reset check failed')
                 return
@@ -225,16 +225,19 @@ class EvalRunner(Node):
         self._reset_future = self._reset_client.call_async(Trigger.Request())
         self._phase = Phase.RESETTING
 
-    def _reset_report(self, pose):
-        t, p, q = pose
-        t0, x0, y0, z0 = self._check_start
+    def _reset_report(self, first, later):
+        # Pose is judged on the first sample after the reset - that is the teleport. By `after`
+        # the robot has dropped ~1 cm onto its feet and the policy has turned it 0.4-2.4 deg
+        # doing so. Speed spans both samples, so leftover momentum still shows.
+        t0, p0, q = first
+        t, p, _ = later
         lim = self._suite.reset_check
         report = {
-            'xy': math.hypot(p.x, p.y),
+            'xy': math.hypot(p0.x, p0.y),
             'yaw_deg': _yaw_deg(q),
             'tilt_deg': _tilt_deg(q),
-            'pelvis_height': p.z,
-            'speed': math.dist((p.x, p.y, p.z), (x0, y0, z0)) / max(t - t0, 1e-6),
+            'pelvis_height': p0.z,
+            'speed': math.dist((p.x, p.y, p.z), (p0.x, p0.y, p0.z)) / max(t - t0, 1e-6),
         }
         report['ok'] = (report['xy'] <= lim['max_xy']
                         and abs(report['yaw_deg']) <= lim['max_yaw_deg']

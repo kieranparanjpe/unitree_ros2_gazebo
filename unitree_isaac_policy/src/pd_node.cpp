@@ -14,6 +14,7 @@
 #include "rclcpp/create_timer.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/joint_state.hpp"
+#include "std_msgs/msg/empty.hpp"
 #include "std_msgs/msg/float64_multi_array.hpp"
 #include "unitree_isaac_policy/pd.hpp"
 
@@ -38,7 +39,9 @@ namespace unitree_isaac_policy
           joint_index_by_name_[joint_names_[joint_index]] = joint_index;
         }
 
-        gains_ = load_gains(YAML::LoadFile(deploy_path), joint_count_);
+        const auto deploy = YAML::LoadFile(deploy_path);
+        gains_ = load_gains(deploy, joint_count_);
+        default_pos_ = deploy["default_joint_pos"].as<std::vector<double>>();
         joint_pos_.assign(joint_count_, 0.0);
         joint_vel_.assign(joint_count_, 0.0);
         torque_.assign(joint_count_, 0.0);
@@ -59,6 +62,20 @@ namespace unitree_isaac_policy
               return;
             }
             target_pos_ = msg->data;
+          });
+
+        // A reset teleports the robot to default_joint_pos, but the last target still belongs to
+        // the pre-reset state - after a fall, hip/waist yaw 0.6-1.4 rad away, i.e. 100-270 N*m.
+        // Hold the reset pose until the policy's first post-reset target. The reset arrives while
+        // the world is paused, and the effort controller keeps applying the last command it got,
+        // which was computed on the teleport step with the old target - so publish a fresh one
+        // now rather than on the next tick, which only comes after the first post-reset step.
+        reset_sub_ = create_subscription<std_msgs::msg::Empty>(
+          declare_parameter<std::string>("reset_topic", "/policy_reset"),
+          rclcpp::QoS(1).transient_local(),
+          [this](const std_msgs::msg::Empty::ConstSharedPtr &) {
+            target_pos_ = default_pos_;
+            on_tick();
           });
 
         effort_pub_ = create_publisher<std_msgs::msg::Float64MultiArray>(
@@ -142,10 +159,12 @@ namespace unitree_isaac_policy
       std::vector<double> joint_vel_;
       std::vector<double> torque_;
       std::vector<double> target_pos_;
+      std::vector<double> default_pos_;
 
       // ROS interfaces
       rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joint_state_sub_;
       rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr target_sub_;
+      rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr reset_sub_;
       rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr effort_pub_;
       rclcpp::TimerBase::SharedPtr timer_;
   };

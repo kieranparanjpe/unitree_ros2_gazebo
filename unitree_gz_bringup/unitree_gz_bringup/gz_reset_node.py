@@ -14,6 +14,7 @@ import time
 
 import gz.transport13 as gz_transport
 import rclpy
+from rclpy.duration import Duration
 from rclpy.node import Node
 from rclpy.parameter import Parameter
 from rclpy.qos import DurabilityPolicy, QoSProfile
@@ -87,15 +88,12 @@ class GzResetNode(Node):
         self._timer.cancel()
         ok, detail = self._reset()
         if ok:
-            self.get_logger().info(f'Startup reset complete ({detail}); notifying policy node')
-            self._reset_pub.publish(Empty())
+            self.get_logger().info(f'Startup reset complete ({detail}); policy node notified')
         else:
             self.get_logger().error(f'Startup reset failed: {detail}')
 
     def _on_reset_request(self, _request, response):
         response.success, response.message = self._reset()
-        if response.success:
-            self._reset_pub.publish(Empty())
         return response
 
     def _step_once(self):
@@ -129,6 +127,13 @@ class GzResetNode(Node):
                 self._gz, self._world, entities, self._joint_names, self._default_joint_pos,
                 model_entity_id)
             self._step_once()
+
+            # Before un-pausing, and confirmed delivered: pd_node must drop its pre-reset target
+            # before its first post-reset tick. policy_node re-seeds on the data after this.
+            self._reset_pub.publish(Empty())
+            if not self._reset_pub.wait_for_all_acked(Duration(seconds=1.0)):
+                self.get_logger().warning(
+                    'reset notification not acknowledged within 1 s; un-pausing anyway')
 
             gz_ecm.world_control(self._gz, self._world, pause=False)
 

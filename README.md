@@ -418,10 +418,13 @@ note below says why.
   (`load_gains()` in `pd.hpp`, `load_dynamics()` in the bridge). Worth knowing before trusting
   any other array in that file.
 - **The two stacks are mutually exclusive.** Both publish to `/effort_controller/commands`.
-- **`pd_node` does not clear its target on reset**, where `policy_bridge_node` does. During the
-  re-seed window it keeps driving toward the pre-teleport target. Harmless at current sensor
-  rates — the window is 1–2 ms and `gz_reset_node` keeps the world paused across the
-  teleport — but it is mitigated by timing rather than by design.
+- **On `/policy_reset`, `pd_node` switches its target to `default_joint_pos` and publishes a
+  fresh effort at once**, holding the reset pose until the policy's first post-reset target.
+  `gz_reset_node` publishes `/policy_reset` while the world is still paused and waits for it to
+  be acknowledged before un-pausing. Both halves matter: the effort controller keeps applying
+  the last command it received, and `pd_node`'s last tick before the un-pause was computed with
+  the pre-reset target. Before this, a reset after a fall put 114–284 N·m on the hip/waist yaw
+  joints for the first step (measured 2026-11-06); now it is 25–68 N·m.
 - **The control loop runs on simulation time.** The launch bridges `/clock` and every node sets
   `use_sim_time`. Without the clock bridge the policy would step on wall time, at a rate
   unrelated to how fast physics is advancing.
