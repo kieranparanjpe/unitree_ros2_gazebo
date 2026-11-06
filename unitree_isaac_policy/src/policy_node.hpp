@@ -210,12 +210,15 @@ namespace unitree_isaac_policy
         }
       }
 
-      // Steps once both the joint and IMU data have reached the next boundary. The first data
-      // after a reset sets the first boundary, so steps stay aligned to the reset.
+      // Steps once both the joint and IMU data have reached the next boundary. The first boundary
+      // is set once both have arrived since the reset, so steps stay aligned to the reset.
       void maybe_step()
       {
         if (!next_step_time_) {
-          next_step_time_ = last_joint_time_;
+          if (joint_state_msg_count_ == 0 || imu_msg_count_ == 0) {
+            return;
+          }
+          next_step_time_ = std::max(last_joint_time_, last_imu_time_);
         }
         if (last_joint_time_ < *next_step_time_ || last_imu_time_ < *next_step_time_) {
           return;
