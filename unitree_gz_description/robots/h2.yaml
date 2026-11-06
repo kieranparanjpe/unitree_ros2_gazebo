@@ -16,6 +16,12 @@ imu_link: imu_in_pelvis
 # which policy_bridge_node's on_step() holds off - see its joint_state_msg_count_ check).
 spawn_height: 1.03
 
+# Links that get a contact sensor when generate_urdf runs with instrumentation on (evaluation
+# only - see unitree_gz_eval).
+foot_links: [left_ankle_pitch_link, right_ankle_pitch_link]
+# Evaluation only: the link whose orientation is reported as torso pitch/roll.
+torso_link: torso_link
+
 # Real SDK motor index order - github.com/unitreerobotics/unitree_sdk2,
 # example/h2/low_level/h2_ankle_swing_example.cpp's `enum H2JointIndex` (31 motors).
 # Combined with deploy.yaml's joint_ids_map this recovers joint names in the policy's own

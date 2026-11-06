@@ -23,6 +23,8 @@ def launch_setup(context, *args, **kwargs):
     robot = LaunchConfiguration('robot').perform(context)
     urdf_path = LaunchConfiguration('urdf_path').perform(context)
     deploy_yaml_path = LaunchConfiguration('deploy_yaml_path').perform(context)
+    instrumentation = LaunchConfiguration('instrumentation').perform(context).lower() == 'true'
+    headless = LaunchConfiguration('headless').perform(context).lower() == 'true'
 
     description_share = get_package_share_directory('unitree_gz_description')
     robot_cfg = load_robot_config(description_share, robot)
@@ -34,7 +36,8 @@ def launch_setup(context, *args, **kwargs):
     with open(controller_config_path, 'w') as f:
         yaml.safe_dump(controller_config, f)
 
-    urdf_xml = build_urdf(robot_cfg, deploy, urdf_path, controller_config_path)
+    urdf_xml = build_urdf(
+        robot_cfg, deploy, urdf_path, controller_config_path, instrumentation=instrumentation)
 
     # gz-sim's stock empty.sdf is deliberately minimal and doesn't load the gz-sim-imu-system
     # plugin, so a <sensor type="imu"> never actually produces data on it (confirmed via
@@ -51,7 +54,7 @@ def launch_setup(context, *args, **kwargs):
         # policy engages, so it falls - gz_reset_node teleports it back once it has
         # settled. Starting paused instead would never let the controllers activate, since
         # controller_manager's update loop only runs on simulation steps.
-        launch_arguments={'gz_args': f'-r {world_path}'}.items(),
+        launch_arguments={'gz_args': f'{"-s " if headless else ""}-r {world_path}'}.items(),
     )
 
     robot_state_publisher = Node(
@@ -147,6 +150,19 @@ def generate_launch_description():
                 'for the policy itself, which the unitree_isaac_policy / unitree_policy_bridge '
                 'launch files load separately.'
             ),
+        ),
+        DeclareLaunchArgument(
+            'instrumentation',
+            default_value='false',
+            description=(
+                'Add simulator-only ground truth (link poses, foot contacts) for '
+                'unitree_gz_eval. Nothing in the policy stack uses it.'
+            ),
+        ),
+        DeclareLaunchArgument(
+            'headless',
+            default_value='false',
+            description='Run the Gazebo server without the GUI',
         ),
         OpaqueFunction(function=launch_setup),
     ])

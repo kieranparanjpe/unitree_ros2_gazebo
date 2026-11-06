@@ -4,7 +4,7 @@
 #
 # Mechanism: gz-sim state is entities + components, and a teleport is just a component the
 # Physics system consumes on its next update - JointPositionReset/JointVelocityReset for the
-# joints, WorldLinearVelocityCmd/WorldAngularVelocityCmd for the base, plus the
+# joints, LinearVelocityCmd/AngularVelocityCmd for the base, plus the
 # /world/<world>/set_pose service for the base pose. /world/<world>/control/state accepts an
 # arbitrary serialized component write, so no custom Gazebo system plugin is needed. This is
 # Harmonic's equivalent of Gazebo Classic's /gazebo/set_model_configuration, which was never
@@ -40,8 +40,8 @@ TYPE_JOINT = hash64('gz_sim_components.Joint')
 TYPE_JOINT_POSITION_RESET = hash64('gz_sim_components.JointPositionReset')
 TYPE_JOINT_VELOCITY_RESET = hash64('gz_sim_components.JointVelocityReset')
 TYPE_MODEL = hash64('gz_sim_components.Model')
-TYPE_WORLD_LINEAR_VELOCITY_CMD = hash64('gz_sim_components.WorldLinearVelocityCmd')
-TYPE_WORLD_ANGULAR_VELOCITY_CMD = hash64('gz_sim_components.WorldAngularVelocityCmd')
+TYPE_LINEAR_VELOCITY_CMD = hash64('gz_sim_components.LinearVelocityCmd')
+TYPE_ANGULAR_VELOCITY_CMD = hash64('gz_sim_components.AngularVelocityCmd')
 
 
 def read_state(gz, world):
@@ -107,8 +107,11 @@ def world_control(gz, world, **fields):
         raise RuntimeError(f'/world/{world}/control rejected {fields}')
 
 
-def write_joint_reset(gz, world, entities, joint_names, default_joint_pos):
+def write_joint_reset(gz, world, entities, joint_names, default_joint_pos, model_entity_id):
     request = WorldControlState()
+    # Same request as the joint write: a second /control/state call before the next step would
+    # discard one of them (see gz_reset_node._reset).
+    _remove_base_velocity_cmd(request, model_entity_id)
     for name, target in zip(joint_names, default_joint_pos):
         entity = request.state.entities.add()
         entity.id = entities[name]
@@ -143,15 +146,18 @@ def write_base_pose(gz, world, model_name, spawn_height):
 def write_base_velocity_zero(gz, world, model_entity_id):
     # Pose is not momentum. Without this the base keeps whatever velocity it had while falling,
     # so it gets teleported upright and immediately continues downwards at the speed it was
-    # already doing - which looks exactly like the reset never happened. These are one-shot
-    # commands, verified: the robot falls normally afterwards rather than being pinned at zero
-    # velocity. Unlike the joint resets these components have no explicit serializer, so
-    # gz-sim's default one applies and the payload is the ASCII form of a math::Vector3d, not a
-    # protobuf message.
+    # already doing - which looks exactly like the reset never happened.
+    #
+    # gz-sim 8's Physics reads the model-frame LinearVelocityCmd/AngularVelocityCmd on a model
+    # (Physics.cc "Update model linear/angular velocity"); the World* variants are never read,
+    # so writing those was accepted and silently did nothing. Physics zeroes these commands
+    # after each step but leaves the components in place, which would hold the base at zero
+    # velocity on every later step - write_joint_reset() removes them in the next step's
+    # request. No explicit serializer, so the payload is the ASCII form of a math::Vector3d.
     request = WorldControlState()
     entity = request.state.entities.add()
     entity.id = model_entity_id
-    for type_id in (TYPE_WORLD_LINEAR_VELOCITY_CMD, TYPE_WORLD_ANGULAR_VELOCITY_CMD):
+    for type_id in (TYPE_LINEAR_VELOCITY_CMD, TYPE_ANGULAR_VELOCITY_CMD):
         component = entity.components.add()
         component.type = type_id
         component.component = b'0 0 0'
@@ -159,3 +165,15 @@ def write_base_velocity_zero(gz, world, model_entity_id):
         f'/world/{world}/control/state', request, WorldControlState, Boolean, 10000)
     if not ok or not rep.data:
         raise RuntimeError('base velocity write rejected')
+
+
+def _remove_base_velocity_cmd(request, model_entity_id):
+    entity = request.state.entities.add()
+    entity.id = model_entity_id
+    for type_id in (TYPE_LINEAR_VELOCITY_CMD, TYPE_ANGULAR_VELOCITY_CMD):
+        component = entity.components.add()
+        component.type = type_id
+        # Ignored, but required: EntityComponentManager::SetState skips components with an
+        # empty payload before it checks `remove`, so an empty removal is silently dropped.
+        component.component = b'0 0 0'
+        component.remove = True

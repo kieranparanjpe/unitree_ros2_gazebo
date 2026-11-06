@@ -33,6 +33,10 @@ CONTROLLER_MANAGER_UPDATE_RATE_HZ = 1000
 IMU_UPDATE_RATE_HZ = 500
 IMU_GZ_TOPIC = 'imu'
 
+# Pose + foot contact publishing rate when instrumentation is on.
+GROUND_TRUTH_RATE_HZ = 200
+POSE_GZ_TOPIC_FMT = '/model/{model}/pose'
+
 
 def load_robot_config(share_dir: str, robot_name: str) -> dict:
     # Only non-path, non-derivable per-robot metadata lives here - see robots/h2.yaml.
@@ -97,7 +101,10 @@ def _rename_colliding_joints(root: ET.Element, actuated_joint_names: list, urdf_
         joint.set('name', f'{name}_joint')
 
 
-def build_urdf(robot_cfg: dict, deploy: dict, urdf_path: str, controller_config_path: str) -> str:
+def build_urdf(
+    robot_cfg: dict, deploy: dict, urdf_path: str, controller_config_path: str,
+    instrumentation: bool = False,
+) -> str:
     joint_names = env_ordered_joint_names(deploy, robot_cfg)
     # The bare URDF's mesh filenames are relative ("meshes/xxx.stl"), resolved against
     # whatever directory the URDF itself is in - same convention unitree_ros' h1_description
@@ -161,7 +168,46 @@ def build_urdf(robot_cfg: dict, deploy: dict, urdf_path: str, controller_config_
     ET.SubElement(sensor, 'topic').text = IMU_GZ_TOPIC
     ET.SubElement(sensor, 'imu')
 
+    if instrumentation:
+        _add_instrumentation(root, robot_cfg)
+
     return ET.tostring(root, encoding='unicode')
+
+
+def _add_instrumentation(root: ET.Element, robot_cfg: dict) -> None:
+    # Simulator-only ground truth for evaluation (unitree_gz_eval) - nothing a real robot has,
+    # so nothing in the policy stack may subscribe to it. Both are read-only observers of
+    # physics state.
+    gazebo = ET.SubElement(root, 'gazebo')
+    plugin = ET.SubElement(gazebo, 'plugin', {
+        'filename': 'gz-sim-pose-publisher-system',
+        'name': 'gz::sim::systems::PosePublisher',
+    })
+    for tag, value in (
+        ('publish_link_pose', 'true'),
+        ('publish_model_pose', 'true'),
+        ('publish_visual_pose', 'false'),
+        ('publish_collision_pose', 'false'),
+        ('publish_sensor_pose', 'false'),
+        ('publish_nested_model_pose', 'false'),
+        ('use_pose_vector_msg', 'true'),
+        ('update_frequency', str(GROUND_TRUTH_RATE_HZ)),
+    ):
+        ET.SubElement(plugin, tag).text = value
+
+    for link in robot_cfg['foot_links']:
+        foot = ET.SubElement(root, 'gazebo', {'reference': link})
+        sensor = ET.SubElement(foot, 'sensor', {'name': f'{link}_contact', 'type': 'contact'})
+        ET.SubElement(sensor, 'always_on').text = 'true'
+        ET.SubElement(sensor, 'update_rate').text = str(GROUND_TRUTH_RATE_HZ)
+        contact = ET.SubElement(sensor, 'contact')
+        # sdformat names an unnamed URDF <collision> "<link>_collision" during conversion.
+        ET.SubElement(contact, 'collision').text = f'{link}_collision'
+        ET.SubElement(contact, 'topic').text = contact_gz_topic(link)
+
+
+def contact_gz_topic(link: str) -> str:
+    return f'/contact/{link}'
 
 
 def build_controller_config(robot_cfg: dict, deploy: dict) -> dict:

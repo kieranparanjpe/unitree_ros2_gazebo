@@ -126,7 +126,8 @@ class GzResetNode(Node):
             self._step_once()
 
             gz_ecm.write_joint_reset(
-                self._gz, self._world, entities, self._joint_names, self._default_joint_pos)
+                self._gz, self._world, entities, self._joint_names, self._default_joint_pos,
+                model_entity_id)
             self._step_once()
 
             gz_ecm.world_control(self._gz, self._world, pause=False)

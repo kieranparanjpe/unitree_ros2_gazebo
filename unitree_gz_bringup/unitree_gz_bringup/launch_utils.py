@@ -44,6 +44,8 @@ def _setup(context, policy_package, policy_launch_file):
                 'robot': robot,
                 'urdf_path': urdf_path,
                 'deploy_yaml_path': derive_deploy_yaml_path(policy_onnx_path),
+                'instrumentation': LaunchConfiguration('instrumentation').perform(context),
+                'headless': LaunchConfiguration('headless').perform(context),
             }),
         ]),
     ]
@@ -72,6 +74,16 @@ def combined_launch_description(policy_package, policy_launch_file):
             'sim_delay',
             default_value='5.0',
             description='Seconds to let the policy stack come up before starting the simulator',
+        ),
+        DeclareLaunchArgument(
+            'instrumentation',
+            default_value='false',
+            description='Forwarded to sim.launch.py (evaluation ground truth)',
+        ),
+        DeclareLaunchArgument(
+            'headless',
+            default_value='false',
+            description='Forwarded to sim.launch.py (no Gazebo GUI)',
         ),
         OpaqueFunction(function=_setup, kwargs={
             'policy_package': policy_package,

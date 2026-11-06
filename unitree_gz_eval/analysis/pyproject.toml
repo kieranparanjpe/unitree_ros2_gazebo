@@ -1,0 +1,11 @@
+[project]
+name = "gz-eval-analysis"
+version = "0"
+requires-python = ">=3.10"
+dependencies = ["numpy", "wandb"]
+
+[dependency-groups]
+dev = ["pytest"]
+
+[tool.uv]
+package = false      # just scripts; nothing gets installed

@@ -1,0 +1,137 @@
+# The evaluation suite. Every policy runs exactly this, whatever it was trained on: commands are
+# graded as published here, not as any policy's deploy.yaml would clamp them. Any edit changes
+# the suite hash, so results from before and after an edit are never grouped together.
+#
+# Units: cmd = [vx m/s, vy m/s, wz rad/s] (body frame, as /cmd_vel); for = seconds (sim time);
+# push at = seconds into its step, dv = [x, y] m/s change in the whole robot's world velocity
+# (an impulse of mass * dv on the pelvis, over one physics step).
+# The robot starts every test at the origin facing +x, so world x/y pushes are fore/aft and
+# lateral at the moment of the push (up to the policy's own heading drift).
+
+lead: 0.5          # s of zero command at the start of each recorded test
+tail: 0.75         # s of zero command at the end
+cmd_rate: 50.0     # Hz /cmd_vel is published at
+
+fall:
+  min_pelvis_height: 0.5   # m
+  max_tilt_deg: 70.0
+
+# Checked right after each reset, before recording: did the teleport put the pelvis back at the
+# origin, upright and at rest? Measured over the first `after` seconds of post-reset poses, so it
+# measures the reset, not the policy.
+reset_check:
+  after: 0.1               # s
+  max_xy: 0.05             # m from the origin
+  max_yaw_deg: 3.0
+  max_tilt_deg: 5.0
+  min_pelvis_height: 0.95  # m (spawn height is 1.03)
+  max_speed: 0.3           # m/s, pelvis
+
+tests:
+  - name: stand
+    lead: 0
+    tail: 0
+    steps:
+      - {cmd: [0, 0, 0], for: 4.0}
+
+  - name: forward_back
+    steps:
+      - {cmd: [ 0.5, 0, 0], for: 4.0}
+      - {cmd: [ 0,   0, 0], for: 1.0}
+      - {cmd: [-0.5, 0, 0], for: 4.0}
+
+  - name: speed_ladder
+    steps:
+      - {cmd: [0.25, 0, 0], for: 3.0}
+      - {cmd: [0.5,  0, 0], for: 3.0}
+      - {cmd: [0.75, 0, 0], for: 3.0}
+      - {cmd: [1.0,  0, 0], for: 3.0}
+
+  - name: strafe
+    steps:
+      - {cmd: [0, -0.3, 0], for: 4.0}
+      - {cmd: [0,  0,   0], for: 1.0}
+      - {cmd: [0,  0.3, 0], for: 4.0}
+
+  - name: spin
+    steps:
+      - {cmd: [0, 0,  0.5], for: 4.0}
+      - {cmd: [0, 0,  0  ], for: 1.0}
+      - {cmd: [0, 0, -0.5], for: 4.0}
+      - {cmd: [0, 0,  0  ], for: 1.0}
+      - {cmd: [0, 0,  1.0], for: 4.0}
+      - {cmd: [0, 0,  0  ], for: 1.0}
+      - {cmd: [0, 0, -1.0], for: 4.0}
+
+  - name: diagonals
+    steps:
+      - {cmd: [ 0.4,  0.2, 0], for: 4.0}
+      - {cmd: [ 0,    0,   0], for: 1.0}
+      - {cmd: [ 0.4, -0.2, 0], for: 4.0}
+      - {cmd: [ 0,    0,   0], for: 1.0}
+      - {cmd: [-0.3,  0.2, 0], for: 4.0}
+
+  - name: walking_turns
+    steps:
+      - {cmd: [0.5, 0,  0.4], for: 4.0}
+      - {cmd: [0,   0,  0  ], for: 1.0}
+      - {cmd: [0.5, 0, -0.4], for: 4.0}
+
+  - name: start_stop
+    steps:
+      - {cmd: [0.5, 0, 0], for: 2.0}
+      - {cmd: [0,   0, 0], for: 1.0}
+      - {cmd: [0.5, 0, 0], for: 2.0}
+      - {cmd: [0,   0, 0], for: 1.0}
+      - {cmd: [0.5, 0, 0], for: 2.0}
+      - {cmd: [0,   0, 0], for: 1.0}
+      - {cmd: [0.5, 0, 0], for: 2.0}
+      - {cmd: [0,   0, 0], for: 1.0}
+      - {cmd: [0.5, 0, 0], for: 2.0}
+      - {cmd: [0,   0, 0], for: 1.0}
+      - {cmd: [0.5, 0, 0], for: 2.0}
+
+  - name: reversals
+    steps:
+      - {cmd: [ 0.5,  0,   0], for: 4.0}
+      - {cmd: [-0.5,  0,   0], for: 4.0}
+      - {cmd: [ 0,    0.3, 0], for: 4.0}
+      - {cmd: [ 0,   -0.3, 0], for: 4.0}
+
+  - name: square
+    # 4 x (2 m forward, then a 90 deg turn in place: 0.5 rad/s for pi s).
+    steps:
+      - {cmd: [0.5, 0, 0  ], for: 4.0}
+      - {cmd: [0,   0, 0.5], for: 3.14159}
+      - {cmd: [0.5, 0, 0  ], for: 4.0}
+      - {cmd: [0,   0, 0.5], for: 3.14159}
+      - {cmd: [0.5, 0, 0  ], for: 4.0}
+      - {cmd: [0,   0, 0.5], for: 3.14159}
+      - {cmd: [0.5, 0, 0  ], for: 4.0}
+      - {cmd: [0,   0, 0.5], for: 3.14159}
+
+  - name: mixed_drive
+    steps:
+      - {cmd: [0.5,  0,    0   ], for: 4.0}
+      - {cmd: [0.5,  0,    0.3 ], for: 4.0}
+      - {cmd: [0.3,  0.2,  0   ], for: 4.0}
+      - {cmd: [0.8,  0,    0   ], for: 4.0}
+      - {cmd: [0,   -0.2, -0.6 ], for: 4.0}
+
+  - name: pushes
+    steps:
+      - cmd: [0.5, 0, 0]
+        for: 10.0
+        pushes:
+          - {at: 2.0, dv: [ 0,    0.5]}
+          - {at: 4.0, dv: [ 0,   -0.5]}
+          - {at: 6.0, dv: [ 0.5,  0  ]}
+          - {at: 8.0, dv: [-0.5,  0  ]}
+      - {cmd: [0, 0, 0], for: 1.0}
+      - cmd: [0, 0, 0]
+        for: 8.0
+        pushes:
+          - {at: 1.0, dv: [ 1.0,  0  ]}
+          - {at: 3.0, dv: [-1.0,  0  ]}
+          - {at: 5.0, dv: [ 0,    1.0]}
+          - {at: 7.0, dv: [ 0,   -1.0]}

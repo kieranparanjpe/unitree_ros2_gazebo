@@ -1,0 +1,36 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>unitree_gz_eval</name>
+  <version>0.0.1</version>
+  <description>
+    Runs a fixed suite of velocity-command tests against whatever policy the simulator stack is
+    running, and records simulator ground truth (link poses, foot contact forces, joint states)
+    per test. Only depends on the existing packages - nothing depends on it. Metrics and wandb
+    upload live in analysis/, which is plain Python and not part of this ROS package.
+  </description>
+  <maintainer email="kieran.paranjpe@mail.mcgill.ca">Kieran Paranjpe</maintainer>
+  <license>TODO</license>
+
+  <exec_depend>unitree_isaac_policy</exec_depend>
+  <exec_depend>unitree_gz_bringup</exec_depend>
+  <exec_depend>unitree_gz_description</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>ros_gz_bridge</exec_depend>
+  <exec_depend>ros_gz_interfaces</exec_depend>
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>std_srvs</exec_depend>
+  <exec_depend>tf2_msgs</exec_depend>
+  <exec_depend>gz_transport_vendor</exec_depend>
+  <exec_depend>gz_msgs_vendor</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
