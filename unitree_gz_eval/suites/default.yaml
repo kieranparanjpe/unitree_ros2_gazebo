@@ -55,11 +55,22 @@ tests:
       - {cmd: [0,  0.3, 0], for: 4.0}
 
   - name: spin
-    # In-place turning at 0.5 rad/s is covered by half_square's turns.
     steps:
       - {cmd: [0, 0,  1.0], for: 4.0}
       - {cmd: [0, 0,  0  ], for: 1.0}
       - {cmd: [0, 0, -1.0], for: 4.0}
+
+  - name: spin_slow
+    # In-place turning from standing at 0.3 and 0.5 rad/s. half_square's 0.5 rad/s turns start
+    # right after walking, so they don't cover this.
+    steps:
+      - {cmd: [0, 0,  0.3], for: 4.0}
+      - {cmd: [0, 0,  0  ], for: 1.0}
+      - {cmd: [0, 0, -0.3], for: 4.0}
+      - {cmd: [0, 0,  0  ], for: 1.0}
+      - {cmd: [0, 0,  0.5], for: 4.0}
+      - {cmd: [0, 0,  0  ], for: 1.0}
+      - {cmd: [0, 0, -0.5], for: 4.0}
 
   - name: diagonals
     steps:
